@@ -740,7 +740,14 @@ function VocabApp({ apiKey }) {
               ) : (
                 <button onClick={()=>{ setSbForm({ url: localStorage.getItem("lx_sb_url")||"", key: localStorage.getItem("lx_sb_key")||"", syncId: localStorage.getItem("lx_syncid")||"" }); setShowSbSetup(true); }}
                   style={{ background:"none", border:"1px solid rgba(255,255,255,.1)", borderRadius:6, color:"#5a4a6a", fontSize:".65rem", padding:"2px 7px", cursor:"pointer" }} title="Cài đặt đồng bộ">
-                  ☁ Sync
+                  ☁ Cài sync
+                </button>
+              )}
+              {/* Always show settings gear when sb is configured so user can reconfigure */}
+              {sb.url && (
+                <button onClick={()=>{ setSbForm({ url: localStorage.getItem("lx_sb_url")||"", key: localStorage.getItem("lx_sb_key")||"", syncId: localStorage.getItem("lx_syncid")||"" }); setShowSbSetup(true); }}
+                  style={{ background:"none", border:"1px solid rgba(255,255,255,.1)", borderRadius:6, color:"#4a3a5a", fontSize:".65rem", padding:"2px 7px", cursor:"pointer" }} title="Cài đặt lại sync">
+                  ⚙
                 </button>
               )}
             </div>
@@ -1922,12 +1929,15 @@ function VocabApp({ apiKey }) {
               {sbTesting ? "⏳ Đang kiểm tra kết nối..." : "🔗 Kết nối & Lưu"}
             </button>
 
-            {localStorage.getItem("lx_sb_url") && (
+            {true && (
               <button className="btn" onClick={()=>{
-                localStorage.removeItem("lx_sb_url"); localStorage.removeItem("lx_sb_key");
+                localStorage.removeItem("lx_sb_url");
+                localStorage.removeItem("lx_sb_key");
+                localStorage.removeItem("lx_syncid");
+                localStorage.removeItem("lx_userid");
                 setSbMsg(""); setShowSbSetup(false); window.location.reload();
               }} style={{width:"100%",padding:".6rem",borderRadius:10,background:"transparent",border:"1px solid rgba(248,113,113,.2)",color:"#f87171",fontSize:".82rem",marginTop:".5rem"}}>
-                Xoá cài đặt đồng bộ
+                🗑 Xoá & cài đặt lại từ đầu
               </button>
             )}
 
