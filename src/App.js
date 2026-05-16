@@ -173,7 +173,7 @@ Return ONLY this JSON (no backticks, no extra text):
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5",
       max_tokens: 500,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }]
@@ -303,7 +303,7 @@ JSON structure:
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-5",
       max_tokens: 1500,
       system: "You are an English writing coach. Output ONLY a single-line compact JSON object. Never put double-quote characters inside JSON string values — use single quotes or reword instead. Never add markdown.",
       messages: [{ role: "user", content: prompt }]
