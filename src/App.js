@@ -138,15 +138,69 @@ const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
 const MODES = { FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
+function getBestVoice(voices) {
+  // Priority list — best quality voices first
+  const priorities = [
+    // iOS — Siri-quality premium voices (available on iOS 16+)
+    v => v.name === "Samantha" && v.lang.startsWith("en"),
+    v => v.name.includes("Samantha"),
+    v => v.name === "Daniel" && v.lang.startsWith("en"),
+    v => v.name.includes("Karen"),
+    v => v.name.includes("Moira"),
+    // macOS / Chrome — Google voices are highest quality
+    v => v.name.toLowerCase().includes("google") && v.lang.startsWith("en-US"),
+    v => v.name.toLowerCase().includes("google") && v.lang.startsWith("en"),
+    // macOS built-in
+    v => v.name === "Alex",
+    v => v.name === "Fred",
+    // Fallback: any en-US then any en
+    v => v.lang === "en-US",
+    v => v.lang.startsWith("en"),
+  ];
+  for (const test of priorities) {
+    const found = voices.find(test);
+    if (found) return found;
+  }
+  return null;
+}
+
 function speak(text, rate=0.92) {
   if (!window.speechSynthesis) return;
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
-  u.lang = "en-US"; u.rate = rate;
+  u.lang = "en-US";
+
+  // iOS needs slower rate to sound cleaner (its TTS engine clips at high rates)
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+  u.rate = isIOS ? Math.min(rate, 0.82) : rate;
+
+  // iOS: slightly lower pitch sounds more natural on Samantha voice
+  u.pitch = isIOS ? 0.95 : 1.0;
+
+  // Volume slightly reduced on iOS prevents distortion
+  u.volume = isIOS ? 0.9 : 1.0;
+
+  const trySpeak = () => {
+    const vs = window.speechSynthesis.getVoices();
+    if (vs.length > 0) {
+      const best = getBestVoice(vs);
+      if (best) u.voice = best;
+    }
+    window.speechSynthesis.speak(u);
+  };
+
+  // iOS sometimes hasn't loaded voices yet — wait for them
   const vs = window.speechSynthesis.getVoices();
-  const v = vs.find(v => v.lang.startsWith("en") && v.name.toLowerCase().includes("google")) || vs.find(v => v.lang.startsWith("en-US")) || vs.find(v => v.lang.startsWith("en"));
-  if (v) u.voice = v;
-  window.speechSynthesis.speak(u);
+  if (vs.length > 0) {
+    trySpeak();
+  } else {
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.onvoiceschanged = null;
+      trySpeak();
+    };
+    // Fallback if onvoiceschanged never fires (some iOS versions)
+    setTimeout(trySpeak, 250);
+  }
 }
 function loadState(key, def) {
   try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : def; } catch { return def; }
