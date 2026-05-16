@@ -153,7 +153,7 @@ function loadState(key, def) {
 }
 
 // ─── AI Word Lookup ───────────────────────────────────────────────────────
-async function aiLookupWord(input) {
+async function aiLookupWord(input, apiKey) {
   const systemPrompt = "You are a bilingual English-Vietnamese dictionary. Always respond with only a raw JSON object, no markdown, no explanation.";
 
   const userPrompt = `Look up this input: "${input}"
@@ -203,7 +203,7 @@ Return ONLY this JSON (no backticks, no extra text):
 
 
 // ─── Claude API — Generate Fill-in-the-blank passage ─────────────────────
-async function generatePassage(words) {
+async function generatePassage(words, apiKey) {
   const wordList = words.map(w => `"${w.word}" (${w.meaning})`).join(", ");
   const prompt = `Create a coherent English paragraph (4-6 sentences) that naturally uses ALL of these ${words.length} vocabulary words: ${wordList}.
 
@@ -279,7 +279,7 @@ function repairAndParseJSON(raw) {
 }
 
 // ─── Claude API — Writing Checker ─────────────────────────────────────────
-async function checkWriting(word, sentence) {
+async function checkWriting(word, sentence, apiKey) {
   // Use XML-tagged output to avoid JSON quote escaping issues entirely
   const prompt = `Analyze this English sentence from a Vietnamese learner.
 Word: ${word.word} | Type: ${word.type} | Level: ${word.level} | Meaning: ${word.meaning}
@@ -461,7 +461,7 @@ function VocabApp({ apiKey }) {
     if (!q) return;
     setAddErr(""); setAddPreview(null); setAddLoading(true);
     try {
-      const result = await aiLookupWord(q);
+      const result = await aiLookupWord(q, apiKey);
       if (!result.word || !result.meaning || !result.example) throw new Error("Kết quả không hợp lệ");
       setAddPreview(result);
     } catch (e) {
@@ -797,7 +797,7 @@ function VocabApp({ apiKey }) {
                       const count = Math.min(5, Math.max(3, Math.floor(Math.random()*3)+3));
                       const picked = shuffle(pool).slice(0, Math.min(count, pool.length));
                       if (picked.length < 2) { setFillErr("Cần ít nhất 2 từ trong danh sách. Hãy học thêm từ!"); setFillLoading(false); return; }
-                      const result = await generatePassage(picked);
+                      const result = await generatePassage(picked, apiKey);
                       setFillPassage(result);
                       setFillAnswers(Array(result.blanks.length).fill(""));
                       setFillChecked(false);
@@ -918,7 +918,7 @@ function VocabApp({ apiKey }) {
                         const pool = learningSet.size >= 3 ? allWords.filter(w=>learningSet.has(w.word)) : allWords;
                         const count = Math.min(5, Math.max(3, Math.floor(Math.random()*3)+3));
                         const picked = shuffle(pool).slice(0, Math.min(count, pool.length));
-                        const result = await generatePassage(picked);
+                        const result = await generatePassage(picked, apiKey);
                         setFillPassage(result);
                         setFillAnswers(Array(result.blanks.length).fill(""));
                       } catch(e) { setFillErr("Lỗi: " + e.message); }
@@ -1296,7 +1296,7 @@ function VocabApp({ apiKey }) {
             if (!writingInput.trim() || writingLoading || !writingWord) return;
             setWritingLoading(true);
             try {
-              const result = await checkWriting(writingWord, writingInput.trim());
+              const result = await checkWriting(writingWord, writingInput.trim(), apiKey);
               setWritingResult(result);
               setWritingHistory(h => [{ word: writingWord.word, sentence: writingInput.trim(), score: result.overallScore, ts: Date.now() }, ...h.slice(0, 9)]);
             } catch(e) {
