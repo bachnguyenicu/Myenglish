@@ -152,6 +152,68 @@ function loadState(key, def) {
   try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : def; } catch { return def; }
 }
 
+
+// ─── Supabase Sync ────────────────────────────────────────────────────────
+// All sync goes through a single "user_data" row identified by a local userId.
+// userId is generated once and stored in localStorage — no login required.
+
+function getSupabaseConfig() {
+  // Reads from Vercel environment variables (REACT_APP_ prefix is required by Create React App)
+  // Falls back to localStorage so you can also set via browser console if needed
+  const url = process.env.REACT_APP_SB_URL || localStorage.getItem("lx_sb_url") || "";
+  const key = process.env.REACT_APP_SB_KEY || localStorage.getItem("lx_sb_key") || "";
+  return { url, key };
+}
+
+function getUserId() {
+  let id = localStorage.getItem("lx_userid");
+  if (!id) {
+    id = "user_" + Math.random().toString(36).slice(2, 11);
+    localStorage.setItem("lx_userid", id);
+  }
+  return id;
+}
+
+async function sbFetch(path, options, sb) {
+  if (!sb?.url || !sb?.key) return null;
+  try {
+    const res = await fetch(`${sb.url}/rest/v1${path}`, {
+      ...options,
+      headers: {
+        "Content-Type": "application/json",
+        "apikey": sb.key,
+        "Authorization": `Bearer ${sb.key}`,
+        "Prefer": "return=representation",
+        ...(options.headers || {}),
+      },
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    return text ? JSON.parse(text) : [];
+  } catch { return null; }
+}
+
+async function loadFromSupabase(sb) {
+  const userId = getUserId();
+  const rows = await sbFetch(`/lexicon_data?user_id=eq.${userId}&select=*`, { method: "GET" }, sb);
+  if (!rows || rows.length === 0) return null;
+  return rows[0];
+}
+
+async function saveToSupabase(sb, payload) {
+  const userId = getUserId();
+  // Upsert — insert or update based on user_id
+  await sbFetch(
+    `/lexicon_data?user_id=eq.${userId}`,
+    {
+      method: "POST",
+      headers: { "Prefer": "resolution=merge-duplicates" },
+      body: JSON.stringify({ user_id: userId, ...payload, updated_at: new Date().toISOString() }),
+    },
+    sb
+  );
+}
+
 // ─── AI Word Lookup ───────────────────────────────────────────────────────
 async function aiLookupWord(input, apiKey) {
   const systemPrompt = "You are a bilingual English-Vietnamese dictionary. Always respond with only a raw JSON object, no markdown, no explanation.";
@@ -378,13 +440,64 @@ function VocabApp({ apiKey }) {
   const filtered = levelFilter === "All" ? allWords : allWords.filter(w => w.level === levelFilter);
   const card = filtered[cardIdx] || filtered[0];
 
-  // Persist
+  // Supabase config
+  const [sb] = useState(() => getSupabaseConfig());
+  const [syncStatus, setSyncStatus] = useState("idle"); // idle | syncing | ok | error | nosb
+  const [lastSync, setLastSync] = useState(null);
+  const syncTimer = useRef(null);
+
+  // Load from Supabase on first mount (if configured)
+  useEffect(() => {
+    if (!sb.url || !sb.key) { setSyncStatus("nosb"); return; }
+    setSyncStatus("syncing");
+    loadFromSupabase(sb).then(row => {
+      if (row) {
+        if (row.words)    { setAllWords(row.words);    localStorage.setItem("lx_words", JSON.stringify(row.words)); }
+        if (row.srs_data) { setSrsData(row.srs_data);  localStorage.setItem("lx_srs", JSON.stringify(row.srs_data)); }
+        if (row.known)    { setKnownArr(row.known);    localStorage.setItem("lx_known", JSON.stringify(row.known)); }
+        if (row.learning) { setLearningArr(row.learning); localStorage.setItem("lx_learning", JSON.stringify(row.learning)); }
+        setLastSync(new Date());
+      }
+      setSyncStatus("ok");
+    }).catch(() => setSyncStatus("error"));
+  }, []);
+
+  // Debounced save — waits 2s after last change before pushing to Supabase
+  const scheduleSave = useCallback((words, srs, known, learning) => {
+    if (!sb.url || !sb.key) return;
+    clearTimeout(syncTimer.current);
+    setSyncStatus("syncing");
+    syncTimer.current = setTimeout(async () => {
+      await saveToSupabase(sb, { words, srs_data: srs, known, learning });
+      setLastSync(new Date());
+      setSyncStatus("ok");
+    }, 2000);
+  }, [sb]);
+
+  // Persist to localStorage + schedule cloud save
   useEffect(() => { try { localStorage.setItem("lx_words", JSON.stringify(allWords)); } catch {} }, [allWords]);
   useEffect(() => { try { localStorage.setItem("lx_srs", JSON.stringify(srsData)); } catch {} }, [srsData]);
   useEffect(() => { try { localStorage.setItem("lx_known", JSON.stringify(knownArr)); } catch {} }, [knownArr]);
   useEffect(() => { try { localStorage.setItem("lx_learning", JSON.stringify(learningArr)); } catch {} }, [learningArr]);
+
+  // Trigger cloud sync whenever any data changes
+  useEffect(() => {
+    scheduleSave(allWords, srsData, knownArr, learningArr);
+  }, [allWords, srsData, knownArr, learningArr]);
+
   useEffect(() => { setCardIdx(0); setFlipped(false); }, [levelFilter]);
   useEffect(() => { window.speechSynthesis?.getVoices(); }, []);
+
+  // Manual sync
+  const doManualSync = async () => {
+    if (!sb.url || !sb.key) return;
+    setSyncStatus("syncing");
+    try {
+      await saveToSupabase(sb, { words: allWords, srs_data: srsData, known: knownArr, learning: learningArr });
+      setLastSync(new Date());
+      setSyncStatus("ok");
+    } catch { setSyncStatus("error"); }
+  };
 
   // Quiz
   const startQuiz = useCallback(() => {
@@ -587,6 +700,12 @@ function VocabApp({ apiKey }) {
               <span style={{ color:"#4ade80" }}>✅ {knownSet.size}</span>
               <span style={{ color:"#f472b6" }}>📌 {learningSet.size}</span>
               {dueCount>0 && <span style={{ color:"#f472b6", fontWeight:700 }}>🔁 {dueCount}</span>}
+              {sb.url && (
+                <button onClick={doManualSync} title={lastSync ? "Đồng bộ lần cuối: " + lastSync.toLocaleTimeString("vi-VN") : "Chưa đồng bộ"}
+                  style={{ background:"none", border:"1px solid rgba(255,255,255,.1)", borderRadius:6, color: syncStatus==="ok"?"#4ade80":syncStatus==="syncing"?"#fbbf24":"#f87171", fontSize:".65rem", padding:"2px 7px", cursor:"pointer" }}>
+                  {syncStatus==="syncing"?"⏳":syncStatus==="ok"?"☁✓":"☁↻"}
+                </button>
+              )}
             </div>
           </div>
           <div style={{ display:"flex", gap:".3rem", flexWrap:"wrap", marginBottom:".42rem", alignItems:"center" }}>
