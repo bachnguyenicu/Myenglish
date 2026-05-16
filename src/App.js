@@ -158,11 +158,12 @@ function loadState(key, def) {
 // userId is generated once and stored in localStorage — no login required.
 
 function getSupabaseConfig() {
-  // Reads from Vercel environment variables (REACT_APP_ prefix is required by Create React App)
-  // Falls back to localStorage so you can also set via browser console if needed
-  const url = process.env.REACT_APP_SB_URL || localStorage.getItem("lx_sb_url") || "";
-  const key = process.env.REACT_APP_SB_KEY || localStorage.getItem("lx_sb_key") || "";
-  return { url, key };
+  try {
+    return {
+      url: localStorage.getItem("lx_sb_url") || "",
+      key: localStorage.getItem("lx_sb_key") || "",
+    };
+  } catch { return { url: "", key: "" }; }
 }
 
 function getUserId() {
@@ -436,6 +437,10 @@ function VocabApp({ apiKey }) {
   const [listenScore, setListenScore] = useState({ c:0, t:0 });
   const [listenDone, setListenDone] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [showSbSetup, setShowSbSetup] = useState(false);
+  const [sbForm, setSbForm] = useState({ url: "", key: "" });
+  const [sbTesting, setSbTesting] = useState(false);
+  const [sbMsg, setSbMsg] = useState("");
 
   const filtered = levelFilter === "All" ? allWords : allWords.filter(w => w.level === levelFilter);
   const card = filtered[cardIdx] || filtered[0];
@@ -497,6 +502,35 @@ function VocabApp({ apiKey }) {
       setLastSync(new Date());
       setSyncStatus("ok");
     } catch { setSyncStatus("error"); }
+  };
+
+
+  // Supabase setup modal
+  const testAndSaveSb = async () => {
+    const url = sbForm.url.trim().replace(/\/$/, "");
+    const key = sbForm.key.trim();
+    if (!url || !key) { setSbMsg("error:Vui lòng nhập đủ URL và Key"); return; }
+    if (!url.includes("supabase.co")) { setSbMsg("error:URL không đúng, phải có dạng https://xxx.supabase.co"); return; }
+    setSbTesting(true); setSbMsg("");
+    try {
+      // Test by reading from the table
+      const res = await fetch(`${url}/rest/v1/lexicon_data?limit=1`, {
+        headers: { "apikey": key, "Authorization": `Bearer ${key}` }
+      });
+      if (res.status === 401) throw new Error("Key không hợp lệ hoặc không có quyền truy cập");
+      if (res.status === 404) throw new Error("Bảng lexicon_data chưa được tạo — hãy chạy SQL trong hướng dẫn trước");
+      if (!res.ok) throw new Error(`Lỗi kết nối (${res.status})`);
+      // Save to localStorage
+      localStorage.setItem("lx_sb_url", url);
+      localStorage.setItem("lx_sb_key", key);
+      setSbMsg("ok:Kết nối thành công! Đang tải dữ liệu...");
+      // Reload page to re-init with new config
+      setTimeout(() => window.location.reload(), 1200);
+    } catch(e) {
+      setSbMsg("error:" + e.message);
+    } finally {
+      setSbTesting(false);
+    }
   };
 
   // Quiz
@@ -700,10 +734,15 @@ function VocabApp({ apiKey }) {
               <span style={{ color:"#4ade80" }}>✅ {knownSet.size}</span>
               <span style={{ color:"#f472b6" }}>📌 {learningSet.size}</span>
               {dueCount>0 && <span style={{ color:"#f472b6", fontWeight:700 }}>🔁 {dueCount}</span>}
-              {sb.url && (
-                <button onClick={doManualSync} title={lastSync ? "Đồng bộ lần cuối: " + lastSync.toLocaleTimeString("vi-VN") : "Chưa đồng bộ"}
+              {sb.url ? (
+                <button onClick={doManualSync} title={lastSync ? "Sync lần cuối: " + lastSync.toLocaleTimeString("vi-VN") : "Chưa sync"}
                   style={{ background:"none", border:"1px solid rgba(255,255,255,.1)", borderRadius:6, color: syncStatus==="ok"?"#4ade80":syncStatus==="syncing"?"#fbbf24":"#f87171", fontSize:".65rem", padding:"2px 7px", cursor:"pointer" }}>
-                  {syncStatus==="syncing"?"⏳":syncStatus==="ok"?"☁✓":"☁↻"}
+                  {syncStatus==="syncing"?"⏳ sync":syncStatus==="ok"?"☁✓":"☁↻"}
+                </button>
+              ) : (
+                <button onClick={()=>setShowSbSetup(true)}
+                  style={{ background:"none", border:"1px solid rgba(255,255,255,.1)", borderRadius:6, color:"#5a4a6a", fontSize:".65rem", padding:"2px 7px", cursor:"pointer" }} title="Cài đặt đồng bộ">
+                  ☁ Sync
                 </button>
               )}
             </div>
@@ -1830,6 +1869,66 @@ function VocabApp({ apiKey }) {
         )}
 
       </div>
+
+
+      {/* ══ SUPABASE SETUP MODAL ══ */}
+      {showSbSetup && (
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,.7)",backdropFilter:"blur(8px)",zIndex:200,display:"flex",alignItems:"center",justifyContent:"center",padding:"1.2rem"}}
+          onClick={e=>{if(e.target===e.currentTarget)setShowSbSetup(false);}}>
+          <div style={{background:"linear-gradient(145deg,#1a1030,#0e1a2e)",border:"1px solid rgba(167,139,250,.25)",borderRadius:24,padding:"1.8rem",width:"100%",maxWidth:440}} onClick={e=>e.stopPropagation()}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"1rem"}}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#d4c8f0"}}>☁ Cài đặt đồng bộ</div>
+              <button onClick={()=>setShowSbSetup(false)} style={{background:"none",border:"none",color:"#5a4a6a",fontSize:"1.3rem",cursor:"pointer"}}>✕</button>
+            </div>
+
+            <div style={{fontSize:".83rem",color:"#7a6a8a",lineHeight:1.65,marginBottom:"1.1rem",fontFamily:"'Crimson Pro',serif"}}>
+              Nhập thông tin Supabase để đồng bộ dữ liệu giữa MacBook và iPhone.
+              Xem file <b style={{color:"#a78bfa"}}>DONG_BO.html</b> trong zip để biết cách lấy thông tin này.
+            </div>
+
+            <div style={{marginBottom:".65rem"}}>
+              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".25rem",letterSpacing:".05em"}}>Project URL</div>
+              <input className="fi" placeholder="https://abcdefghijk.supabase.co"
+                value={sbForm.url} onChange={e=>setSbForm(f=>({...f,url:e.target.value}))}
+                style={{fontFamily:"monospace",fontSize:".85rem"}} />
+            </div>
+
+            <div style={{marginBottom:".8rem"}}>
+              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".25rem",letterSpacing:".05em"}}>anon public key</div>
+              <input className="fi" type="password" placeholder="eyJhbGciOiJIUzI1NiIs..."
+                value={sbForm.key} onChange={e=>setSbForm(f=>({...f,key:e.target.value}))}
+                style={{fontFamily:"monospace",fontSize:".85rem"}} />
+            </div>
+
+            {sbMsg && (
+              <div style={{padding:".5rem .8rem",borderRadius:9,marginBottom:".8rem",fontSize:".82rem",
+                background:sbMsg.startsWith("ok:")?"rgba(74,222,128,.1)":"rgba(248,113,113,.1)",
+                border:`1px solid ${sbMsg.startsWith("ok:")?"rgba(74,222,128,.25)":"rgba(248,113,113,.25)"}`,
+                color:sbMsg.startsWith("ok:")?"#86efac":"#fca5a5"}}>
+                {sbMsg.startsWith("ok:")?"✅ ":"⚠ "}{sbMsg.replace(/^(ok|error):/, "")}
+              </div>
+            )}
+
+            <button className="btn" onClick={testAndSaveSb} disabled={sbTesting}
+              style={{width:"100%",padding:".85rem",borderRadius:12,background:sbTesting?"rgba(167,139,250,.25)":"linear-gradient(135deg,#a78bfa,#ec4899)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
+              {sbTesting ? "⏳ Đang kiểm tra kết nối..." : "🔗 Kết nối & Lưu"}
+            </button>
+
+            {localStorage.getItem("lx_sb_url") && (
+              <button className="btn" onClick={()=>{
+                localStorage.removeItem("lx_sb_url"); localStorage.removeItem("lx_sb_key");
+                setSbMsg(""); setShowSbSetup(false); window.location.reload();
+              }} style={{width:"100%",padding:".6rem",borderRadius:10,background:"transparent",border:"1px solid rgba(248,113,113,.2)",color:"#f87171",fontSize:".82rem",marginTop:".5rem"}}>
+                Xoá cài đặt đồng bộ
+              </button>
+            )}
+
+            <div style={{marginTop:".9rem",fontSize:".72rem",color:"#3a2a4a",textAlign:"center",lineHeight:1.6}}>
+              URL và Key lưu trên máy bạn · Chỉ kết nối với Supabase của bạn
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ textAlign:"center", padding:".9rem", color:"#2a1a3a", fontSize:".65rem", fontFamily:"'Crimson Pro',serif", letterSpacing:".06em", borderTop:"1px solid rgba(255,255,255,.04)" }}>
         Lexicon · {allWords.length} từ · SRS · AI Lookup · {knownSet.size} đã thành thạo
