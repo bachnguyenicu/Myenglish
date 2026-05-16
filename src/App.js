@@ -167,12 +167,8 @@ function getSupabaseConfig() {
 }
 
 function getUserId() {
-  let id = localStorage.getItem("lx_userid");
-  if (!id) {
-    id = "user_" + Math.random().toString(36).slice(2, 11);
-    localStorage.setItem("lx_userid", id);
-  }
-  return id;
+  // Use a fixed sync ID set by user (same across all devices) — falls back to random if not set
+  return localStorage.getItem("lx_syncid") || localStorage.getItem("lx_userid") || "default";
 }
 
 async function sbFetch(path, options, sb) {
@@ -438,7 +434,7 @@ function VocabApp({ apiKey }) {
   const [listenDone, setListenDone] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [showSbSetup, setShowSbSetup] = useState(false);
-  const [sbForm, setSbForm] = useState({ url: "", key: "" });
+  const [sbForm, setSbForm] = useState({ url: "", key: "", syncId: "" });
   const [sbTesting, setSbTesting] = useState(false);
   const [sbMsg, setSbMsg] = useState("");
 
@@ -521,8 +517,10 @@ function VocabApp({ apiKey }) {
       if (res.status === 404) throw new Error("Bảng lexicon_data chưa được tạo — hãy chạy SQL trong hướng dẫn trước");
       if (!res.ok) throw new Error(`Lỗi kết nối (${res.status})`);
       // Save to localStorage
+      const syncId = sbForm.syncId.trim() || localStorage.getItem("lx_syncid") || "myaccount";
       localStorage.setItem("lx_sb_url", url);
       localStorage.setItem("lx_sb_key", key);
+      localStorage.setItem("lx_syncid", syncId);
       setSbMsg("ok:Kết nối thành công! Đang tải dữ liệu...");
       // Reload page to re-init with new config
       setTimeout(() => window.location.reload(), 1200);
@@ -740,7 +738,7 @@ function VocabApp({ apiKey }) {
                   {syncStatus==="syncing"?"⏳ sync":syncStatus==="ok"?"☁✓":"☁↻"}
                 </button>
               ) : (
-                <button onClick={()=>setShowSbSetup(true)}
+                <button onClick={()=>{ setSbForm({ url: localStorage.getItem("lx_sb_url")||"", key: localStorage.getItem("lx_sb_key")||"", syncId: localStorage.getItem("lx_syncid")||"" }); setShowSbSetup(true); }}
                   style={{ background:"none", border:"1px solid rgba(255,255,255,.1)", borderRadius:6, color:"#5a4a6a", fontSize:".65rem", padding:"2px 7px", cursor:"pointer" }} title="Cài đặt đồng bộ">
                   ☁ Sync
                 </button>
@@ -1891,6 +1889,16 @@ function VocabApp({ apiKey }) {
               <input className="fi" placeholder="https://abcdefghijk.supabase.co"
                 value={sbForm.url} onChange={e=>setSbForm(f=>({...f,url:e.target.value}))}
                 style={{fontFamily:"monospace",fontSize:".85rem"}} />
+            </div>
+
+            <div style={{marginBottom:".65rem"}}>
+              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".25rem",letterSpacing:".05em"}}>Mã đồng bộ <span style={{color:"#f472b6",fontWeight:700}}>— dùng chung trên mọi thiết bị</span></div>
+              <input className="fi" placeholder="vd: hoctuvung2024 (tự đặt, nhớ dùng y chang trên iPhone)"
+                value={sbForm.syncId} onChange={e=>setSbForm(f=>({...f,syncId:e.target.value}))}
+                style={{fontSize:".85rem"}} />
+              <div style={{fontSize:".68rem",color:"#4a3a5a",marginTop:".2rem"}}>
+                💡 Đặt bất kỳ, ví dụ tên bạn. Nhập đúng mã này trên mọi thiết bị để đồng bộ cùng dữ liệu.
+              </div>
             </div>
 
             <div style={{marginBottom:".8rem"}}>
