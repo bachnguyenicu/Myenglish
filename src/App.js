@@ -286,7 +286,7 @@ Return ONLY this JSON (no backticks, no extra text):
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-5",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 500,
       system: systemPrompt,
       messages: [{ role: "user", content: userPrompt }]
@@ -434,6 +434,42 @@ JSON structure:
   }
 }
 
+
+// ─── Claude API — Generate Dictation Sentence ─────────────────────────────
+async function generateDictationSentence(word, apiKey) {
+  const prompt = `Create ONE natural English sentence using the word "${word.word}" (${word.type}, meaning: ${word.meaning}).
+
+Requirements:
+- Length: 15-25 words
+- Natural, fluid English (conversational or academic)
+- The word must appear exactly once in the sentence
+- Varied vocabulary, realistic context, grammatically perfect
+
+Reply with ONLY the sentence, no quotes, no explanation.`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+    },
+    body: JSON.stringify({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 120,
+      system: "Reply with ONLY one English sentence. No quotes. No explanation.",
+      messages: [{ role: "user", content: prompt }]
+    })
+  });
+  let data;
+  try { data = await res.json(); } catch(e) { throw new Error("Không đọc được phản hồi"); }
+  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  const sentence = (data.content || []).map(b => b.text || "").join("").trim().replace(/^["\']+|["\']+$/g, "");
+  if (!sentence || sentence.length < 20) throw new Error("Câu quá ngắn, thử lại");
+  return sentence;
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
   const [allWords, setAllWords] = useState(() => loadState("lx_words", BUILT_IN));
@@ -487,6 +523,8 @@ function VocabApp({ apiKey }) {
   const [listenScore, setListenScore] = useState({ c:0, t:0 });
   const [listenDone, setListenDone] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const [dictSentences, setDictSentences] = useState({}); // cache: word -> AI sentence
+  const [dictGenLoading, setDictGenLoading] = useState(false);
   const [showSbSetup, setShowSbSetup] = useState(false);
   const [sbForm, setSbForm] = useState({ url: "", key: "", syncId: "" });
   const [sbTesting, setSbTesting] = useState(false);
@@ -1334,20 +1372,39 @@ function VocabApp({ apiKey }) {
             const q = shuffle(pool).slice(0, Math.min(12, pool.length));
             setListenQueue(q); setListenIdx(0); setListenInput("");
             setListenChecked(false); setListenScore({c:0,t:0}); setListenDone(false);
+            setDictSentences({}); // reset AI sentence cache for new session
           };
+
+          // Get the sentence to use: AI-generated if available, fallback to example
+          const getActiveSentence = (w) => (w && dictSentences[w.word]) ? dictSentences[w.word] : (w ? w.example : "");
 
           const playSentence = (rate) => {
             if(!current) return;
+            const sentence = getActiveSentence(current);
             setIsSpeaking(true);
-            speak(current.example, rate||0.78);
-            const est = Math.max(2000, current.example.length * 72);
+            speak(sentence, rate||0.78);
+            const est = Math.max(2000, sentence.length * 72);
             setTimeout(() => setIsSpeaking(false), est);
+          };
+
+          const genAISentence = async () => {
+            if(!current || dictGenLoading) return;
+            setDictGenLoading(true);
+            try {
+              const s = await generateDictationSentence(current, apiKey);
+              setDictSentences(prev => ({...prev, [current.word]: s}));
+            } catch(e) {
+              // silently fail, keep using example
+            } finally {
+              setDictGenLoading(false);
+            }
           };
 
           const handleCheckD = () => {
             if(!current || !listenInput.trim()) return;
             setListenChecked(true);
-            const ok = normalize(listenInput) === normalize(current.example);
+            const activeSentence = getActiveSentence(current);
+            const ok = normalize(listenInput) === normalize(activeSentence);
             setListenScore(p => ({ c: p.c+(ok?1:0), t: p.t+1 }));
           };
 
@@ -1384,8 +1441,9 @@ function VocabApp({ apiKey }) {
             </div>
           );
 
-          const diffResult = listenChecked ? diffWords(listenInput, current.example) : null;
-          const isFullyCorrect = listenChecked && normalize(listenInput) === normalize(current.example);
+          const activeSentence = getActiveSentence(current);
+          const diffResult = listenChecked ? diffWords(listenInput, activeSentence) : null;
+          const isFullyCorrect = listenChecked && normalize(listenInput) === normalize(activeSentence);
 
           return (
             <div>
@@ -1409,13 +1467,31 @@ function VocabApp({ apiKey }) {
                 </div>
 
                 {/* Speed controls */}
-                <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginBottom:"1.4rem"}}>
+                <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginBottom:".8rem"}}>
                   {[[0.55,"🐢 Chậm"],[0.78,"▶ Bình thường"],[1.0,"🐇 Nhanh"]].map(([r,label])=>(
                     <button key={r} className="btn" onClick={()=>playSentence(r)}
                       style={{padding:".3rem .7rem",borderRadius:999,background:"rgba(96,165,250,.1)",border:"1px solid rgba(96,165,250,.2)",color:"#93c5fd",fontSize:".72rem"}}>
                       {label}
                     </button>
                   ))}
+                </div>
+
+                {/* AI sentence toggle */}
+                <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:".6rem",marginBottom:"1.1rem"}}>
+                  {dictSentences[current.word] ? (
+                    <div style={{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",justifyContent:"center"}}>
+                      <span style={{fontSize:".7rem",background:"rgba(167,139,250,.15)",border:"1px solid rgba(167,139,250,.3)",borderRadius:999,padding:".15rem .65rem",color:"#c4b5fd"}}>✨ Câu AI — dài hơn, khó hơn</span>
+                      <button className="btn" onClick={()=>setDictSentences(prev=>{const n={...prev};delete n[current.word];return n;})}
+                        style={{fontSize:".68rem",color:"#5a4a6a",background:"none",border:"1px solid rgba(255,255,255,.08)",borderRadius:6,padding:".15rem .5rem"}}>
+                        ↩ Dùng câu gốc
+                      </button>
+                    </div>
+                  ) : (
+                    <button className="btn" onClick={genAISentence} disabled={dictGenLoading}
+                      style={{padding:".32rem .9rem",borderRadius:999,background:dictGenLoading?"rgba(167,139,250,.1)":"rgba(167,139,250,.18)",border:"1px solid rgba(167,139,250,.35)",color:"#c4b5fd",fontSize:".75rem"}}>
+                      {dictGenLoading ? "⏳ Đang tạo câu..." : "✨ Tạo câu mới khó hơn (AI)"}
+                    </button>
+                  )}
                 </div>
 
                 {/* Textarea input */}
@@ -1452,7 +1528,7 @@ function VocabApp({ apiKey }) {
                         </div>
                         <div style={{marginTop:".6rem",fontSize:".78rem",color:"#5a4a6a",fontFamily:"'Crimson Pro',serif"}}>
                           Từ trong câu: <b style={{color:"#93c5fd"}}>{current.word}</b>
-                          <button className="spkbtn btn" style={{marginLeft:".5rem"}} onClick={()=>speak(current.example, 0.7)}>🔊 Nghe lại</button>
+                          <button className="spkbtn btn" style={{marginLeft:".5rem"}} onClick={()=>speak(getActiveSentence(current), 0.7)}>🔊 Nghe lại</button>
                         </div>
                       </div>
                     )}
