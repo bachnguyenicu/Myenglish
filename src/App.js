@@ -135,7 +135,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", REVIEW:"review", ADD:"add" };
+const MODES = { FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 function getBestVoice(voices) {
@@ -525,6 +525,14 @@ function VocabApp({ apiKey }) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [dictSentences, setDictSentences] = useState({}); // cache: word -> AI sentence
   const [dictGenLoading, setDictGenLoading] = useState(false);
+  // Speaking / Pronunciation
+  const [spkWord, setSpkWord] = useState(null);
+  const [spkMode, setSpkMode] = useState("word"); // "word" | "sentence"
+  const [spkResult, setSpkResult] = useState(null); // {transcript, score, feedback}
+  const [spkListening, setSpkListening] = useState(false);
+  const [spkPlaying, setSpkPlaying] = useState(false);
+  const [spkHistory, setSpkHistory] = useState([]); // [{word, score, ts}]
+  const recognitionRef = useRef(null);
   const [showSbSetup, setShowSbSetup] = useState(false);
   const [sbForm, setSbForm] = useState({ url: "", key: "", syncId: "" });
   const [sbTesting, setSbTesting] = useState(false);
@@ -778,6 +786,16 @@ function VocabApp({ apiKey }) {
     .diff-correct{color:#4ade80;}
     .diff-wrong{color:#f87171;text-decoration:underline;}
     .diff-missing{color:#f87171;font-style:italic;}
+    .phone-char{display:inline-block;padding:.1rem .25rem;border-radius:4px;margin:.05rem;font-family:monospace;font-size:.95rem;transition:all .2s;}
+    .phone-ok{background:rgba(74,222,128,.18);color:#4ade80;}
+    .phone-bad{background:rgba(248,113,113,.18);color:#f87171;text-decoration:underline;}
+    .phone-miss{background:rgba(251,191,36,.12);color:#fbbf24;font-style:italic;}
+    .mic-btn{width:80px;height:80px;border-radius:50%;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:2rem;transition:all .25s;margin:0 auto;}
+    .mic-btn.idle{background:linear-gradient(135deg,rgba(167,139,250,.2),rgba(236,72,153,.15));border:2px solid rgba(167,139,250,.3);}
+    .mic-btn.listening{background:rgba(248,113,113,.25);border:2px solid #f87171;animation:micpulse 1s ease-in-out infinite;}
+    @keyframes micpulse{0%,100%{box-shadow:0 0 0 0 rgba(248,113,113,.4)}50%{box-shadow:0 0 0 14px rgba(248,113,113,.0)}}
+    .score-ring{transform:rotate(-90deg);transform-origin:50%;}
+    .spk-tab{padding:.35rem .9rem;border-radius:999px;font-size:.78rem;font-weight:700;cursor:pointer;border:1.5px solid;transition:all .2s;}
     .writing-area{width:100%;background:rgba(255,255,255,.05);border:2px solid rgba(255,255,255,.1);border-radius:14px;padding:.9rem 1rem;color:#e8e0f0;font-family:'Crimson Pro',serif;font-size:1.05rem;outline:none;transition:all .25s;line-height:1.7;resize:none;min-height:110px;}
     .writing-area:focus{border-color:#f472b6;background:rgba(244,114,182,.06);}
     .tag{display:inline-flex;align-items:center;padding:.18rem .65rem;border-radius:999px;font-size:.72rem;font-weight:700;letter-spacing:.04em;}
@@ -802,6 +820,7 @@ function VocabApp({ apiKey }) {
     [MODES.LISTEN_DEF]:"👂 Nghe nghĩa",
     [MODES.DICTATION]:"🎧 Chép chính tả",
     [MODES.WRITING]:"✏️ Writing",
+    [MODES.SPEAKING]:"🎤 Speaking",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
   };
@@ -1809,6 +1828,277 @@ function VocabApp({ apiKey }) {
                       <span style={{fontSize:".65rem",color:"#4a3a5a",background:"rgba(167,139,250,.1)",borderRadius:6,padding:"1px 6px"}}>{h.word}</span>
                     </div>
                   ))}
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+
+        {/* ══ SPEAKING / PRONUNCIATION ══ */}
+        {mode===MODES.SPEAKING && (() => {
+          const pool = filtered.length >= 1 ? filtered : allWords;
+
+          // ── Helpers ──────────────────────────────────────────────────
+          const normalize = s => s.toLowerCase().trim().replace(/[^a-z\s']/g, "").replace(/\s+/g, " ");
+
+          // Word-level similarity score 0-100
+          const wordScore = (spoken, target) => {
+            const s = normalize(spoken).split(" ");
+            const t = normalize(target).split(" ");
+            if (t.length === 0) return 0;
+            let matched = 0;
+            t.forEach((tw, i) => {
+              const sw = s[i] || "";
+              if (sw === tw) { matched += 1; return; }
+              // Partial: count matching chars
+              let m = 0;
+              for (let j = 0; j < Math.min(sw.length, tw.length); j++) if (sw[j] === tw[j]) m++;
+              matched += (m / Math.max(sw.length, tw.length, 1)) * 0.6;
+            });
+            return Math.round((matched / t.length) * 100);
+          };
+
+          // Character-level diff for display
+          const charDiff = (spoken, target) => {
+            const st = normalize(spoken).split(" ");
+            const tt = normalize(target).split(" ");
+            return tt.map((tw, i) => {
+              const sw = st[i] || "";
+              if (sw === tw) return { word: tw, status: "ok" };
+              if (!sw) return { word: tw, status: "miss" };
+              return { word: tw, spoken: sw, status: "bad" };
+            });
+          };
+
+          const scoreColor = s => s >= 85 ? "#4ade80" : s >= 65 ? "#fbbf24" : "#f87171";
+          const scoreLabel = s => s >= 95 ? "Hoàn hảo! 🌟" : s >= 85 ? "Rất tốt! 👍" : s >= 70 ? "Khá tốt 💪" : s >= 50 ? "Cần luyện thêm" : "Thử lại nhé 🔄";
+
+          const pickWord = () => {
+            const priority = pool.filter(w => learningSet.has(w.word));
+            const source = priority.length > 0 ? priority : pool;
+            const w = source[Math.floor(Math.random() * source.length)];
+            setSpkWord(w); setSpkResult(null); setSpkMode("word");
+          };
+
+          const playTarget = (rate) => {
+            if (!spkWord) return;
+            const text = spkMode === "word" ? spkWord.word : spkWord.example;
+            setSpkPlaying(true);
+            speak(text, rate || (spkMode === "word" ? 0.7 : 0.78));
+            setTimeout(() => setSpkPlaying(false), Math.max(1000, text.length * 70));
+          };
+
+          const startListening = () => {
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) { setSpkResult({ error: "Trình duyệt không hỗ trợ ghi âm. Hãy dùng Chrome hoặc Safari." }); return; }
+            if (spkListening) { recognitionRef.current?.stop(); return; }
+
+            const rec = new SR();
+            recognitionRef.current = rec;
+            rec.lang = "en-US";
+            rec.continuous = false;
+            rec.interimResults = false;
+            rec.maxAlternatives = 3;
+
+            rec.onstart = () => setSpkListening(true);
+            rec.onend = () => setSpkListening(false);
+            rec.onerror = (e) => {
+              setSpkListening(false);
+              if (e.error !== "no-speech") setSpkResult({ error: "Lỗi ghi âm: " + e.error });
+            };
+            rec.onresult = (e) => {
+              // Pick best alternative
+              let best = "", bestScore = -1;
+              const target = spkMode === "word" ? spkWord.word : spkWord.example;
+              for (let i = 0; i < e.results[0].length; i++) {
+                const t = e.results[0][i].transcript;
+                const s = wordScore(t, target);
+                if (s > bestScore) { bestScore = s; best = t; }
+              }
+              const diff = charDiff(best, target);
+              setSpkResult({ transcript: best, score: bestScore, diff, target });
+              setSpkHistory(h => [{ word: spkWord.word, mode: spkMode, score: bestScore, ts: Date.now() }, ...h.slice(0, 14)]);
+            };
+            rec.start();
+          };
+
+          if (!spkWord) return (
+            <div style={{textAlign:"center",padding:"2rem 1rem"}}>
+              <div style={{fontSize:"3rem",marginBottom:".7rem"}}>🎤</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.3rem",fontWeight:700,color:"#f0eaff",marginBottom:".5rem"}}>Luyện Speaking & Phát âm</div>
+              <div style={{fontSize:".88rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",lineHeight:1.75,maxWidth:380,margin:"0 auto 1.4rem"}}>
+                Nghe mẫu → tự đọc theo → app ghi âm và chấm điểm từng từ.<br/>
+                Luyện <b style={{color:"#a78bfa"}}>từ đơn</b> để chuẩn hoá phát âm, hoặc luyện <b style={{color:"#f472b6"}}>cả câu</b> để cải thiện ngữ điệu.
+              </div>
+              <button className="btn" onClick={pickWord}
+                style={{padding:".9rem 2.5rem",borderRadius:14,background:"linear-gradient(135deg,#a78bfa,#f472b6)",color:"white",fontSize:"1rem",border:"none",fontWeight:700}}>
+                🎯 Bắt đầu luyện
+              </button>
+
+              {spkHistory.length > 0 && (
+                <div style={{marginTop:"1.8rem",textAlign:"left"}}>
+                  <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem"}}>📋 Lịch sử gần đây</div>
+                  {spkHistory.slice(0,5).map((h,i) => (
+                    <div key={i} style={{display:"flex",alignItems:"center",gap:".7rem",padding:".45rem .8rem",background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.06)",borderRadius:10,marginBottom:".3rem"}}>
+                      <span style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:scoreColor(h.score),minWidth:32,textAlign:"center"}}>{h.score}</span>
+                      <span style={{flex:1,fontSize:".83rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif"}}>{h.word}</span>
+                      <span style={{fontSize:".65rem",color:"#4a3a5a",background:"rgba(167,139,250,.1)",borderRadius:6,padding:"1px 7px"}}>{h.mode==="word"?"từ":"câu"}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+
+          return (
+            <div>
+              {/* Mode toggle */}
+              <div style={{display:"flex",gap:".5rem",marginBottom:"1rem",justifyContent:"center"}}>
+                {[["word","🔤 Từ đơn","rgba(167,139,250,.2)","rgba(167,139,250,.4)","#c4b5fd"],
+                  ["sentence","📝 Cả câu","rgba(244,114,182,.2)","rgba(244,114,182,.4)","#f9a8d4"]].map(([m,label,bg,bc,col])=>(
+                  <button key={m} className="btn spk-tab" onClick={()=>{setSpkMode(m);setSpkResult(null);}}
+                    style={{background:spkMode===m?bg:"transparent",borderColor:spkMode===m?bc:"rgba(255,255,255,.1)",color:spkMode===m?col:"#5a4a6a"}}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+
+              {/* Word card */}
+              <div style={{background:"linear-gradient(145deg,#1a1030,#251540)",border:"1px solid rgba(167,139,250,.2)",borderRadius:22,padding:"1.5rem",marginBottom:"1rem",textAlign:"center"}}>
+                {/* Word info */}
+                <div style={{marginBottom:"1rem"}}>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize: spkMode==="word"?"2.5rem":"1.3rem",fontWeight:900,color:"#f5f0ff",lineHeight:1.2}}>
+                    {spkMode==="word" ? spkWord.word : `"${spkWord.example}"`}
+                  </div>
+                  <div style={{color:"#a78bfa",fontSize:".9rem",fontStyle:"italic",fontFamily:"'Crimson Pro',serif",marginTop:".3rem",opacity:.8}}>
+                    {spkMode==="word" ? spkWord.phonetic : spkWord.word + " — " + spkWord.meaning}
+                  </div>
+                  {spkMode==="word" && <div style={{color:"#7a6a8a",fontSize:".82rem",fontFamily:"'Crimson Pro',serif",marginTop:".2rem"}}>{spkWord.meaning}</div>}
+                </div>
+
+                {/* Listen buttons */}
+                <div style={{marginBottom:"1rem"}}>
+                  <div style={{fontSize:".68rem",color:"#5a4a6a",marginBottom:".5rem",letterSpacing:".08em"}}>NGHE MẪU</div>
+                  <div style={{display:"flex",gap:".5rem",justifyContent:"center"}}>
+                    {(spkMode==="word"
+                      ? [[0.55,"🐢 Chậm"],[0.82,"▶ Chuẩn"],[1.1,"🐇 Nhanh"]]
+                      : [[0.6,"🐢 Chậm"],[0.82,"▶ Chuẩn"]]
+                    ).map(([r,label])=>(
+                      <button key={r} className={`btn ${spkPlaying?"speak-pulse":""}`} onClick={()=>playTarget(r)}
+                        style={{padding:".38rem .85rem",borderRadius:999,background:"rgba(167,139,250,.14)",border:"1px solid rgba(167,139,250,.28)",color:"#c4b5fd",fontSize:".78rem"}}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Mic button */}
+                <div style={{fontSize:".68rem",color:"#5a4a6a",marginBottom:".5rem",letterSpacing:".08em"}}>
+                  {spkListening ? "🔴 ĐANG GHI ÂM — NÓI ĐI!" : "NHẤN ĐỂ NÓI"}
+                </div>
+                <button className={`mic-btn btn ${spkListening?"listening":"idle"}`} onClick={startListening}>
+                  {spkListening ? "⏹" : "🎤"}
+                </button>
+                {spkListening && (
+                  <div style={{marginTop:".6rem",fontSize:".78rem",color:"#f87171",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>
+                    Nhấn lại để dừng...
+                  </div>
+                )}
+              </div>
+
+              {/* Result */}
+              {spkResult && (
+                <div className="fade-in">
+                  {spkResult.error ? (
+                    <div style={{padding:".8rem 1rem",borderRadius:12,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.2)",color:"#fca5a5",fontSize:".85rem",marginBottom:"1rem"}}>
+                      ⚠ {spkResult.error}
+                    </div>
+                  ) : (
+                    <div>
+                      {/* Score display */}
+                      <div style={{background:"rgba(0,0,0,.3)",border:`2px solid ${scoreColor(spkResult.score)}44`,borderRadius:18,padding:"1rem 1.2rem",marginBottom:"1rem"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:"1rem"}}>
+                          {/* Circle score */}
+                          <div style={{position:"relative",width:72,height:72,flexShrink:0}}>
+                            <svg width="72" height="72" viewBox="0 0 72 72">
+                              <circle cx="36" cy="36" r="30" fill="none" stroke="rgba(255,255,255,.08)" strokeWidth="6"/>
+                              <circle cx="36" cy="36" r="30" fill="none" stroke={scoreColor(spkResult.score)} strokeWidth="6"
+                                strokeDasharray={`${(spkResult.score/100)*188.5} 188.5`}
+                                strokeLinecap="round" className="score-ring"/>
+                            </svg>
+                            <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+                              <span style={{fontFamily:"'Playfair Display',serif",fontWeight:900,fontSize:"1.25rem",color:scoreColor(spkResult.score),lineHeight:1}}>{spkResult.score}</span>
+                              <span style={{fontSize:".55rem",color:"#5a4a6a"}}>/ 100</span>
+                            </div>
+                          </div>
+                          <div style={{flex:1}}>
+                            <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.05rem",color:scoreColor(spkResult.score)}}>{scoreLabel(spkResult.score)}</div>
+                            <div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",marginTop:".2rem"}}>
+                              Bạn nói: <i style={{color:"#c4b5fd"}}>"{spkResult.transcript}"</i>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Word-by-word breakdown */}
+                        <div style={{marginTop:".9rem",paddingTop:".8rem",borderTop:"1px solid rgba(255,255,255,.06)"}}>
+                          <div style={{fontSize:".65rem",color:"#5a4a6a",marginBottom:".5rem",letterSpacing:".08em"}}>PHÂN TÍCH TỪNG TỪ</div>
+                          <div style={{lineHeight:2.2,wordSpacing:"4px"}}>
+                            {spkResult.diff.map((d,i) => (
+                              <span key={i} className={`phone-char ${d.status==="ok"?"phone-ok":d.status==="miss"?"phone-miss":"phone-bad"}`}
+                                title={d.status==="bad" ? `Bạn nói: "${d.spoken}"` : d.status==="miss" ? "Bỏ sót" : "Đúng"}>
+                                {d.word}
+                              </span>
+                            ))}
+                          </div>
+                          <div style={{display:"flex",gap:"1rem",marginTop:".5rem",fontSize:".7rem"}}>
+                            <span className="phone-char phone-ok" style={{fontSize:".7rem"}}>✓ Đúng</span>
+                            <span className="phone-char phone-bad" style={{fontSize:".7rem"}}>✗ Sai</span>
+                            <span className="phone-char phone-miss" style={{fontSize:".7rem"}}>? Bỏ sót</span>
+                          </div>
+                        </div>
+
+                        {/* Tips for bad words */}
+                        {spkResult.diff.some(d=>d.status==="bad") && (
+                          <div style={{marginTop:".8rem",paddingTop:".7rem",borderTop:"1px solid rgba(255,255,255,.06)"}}>
+                            <div style={{fontSize:".65rem",color:"#5a4a6a",marginBottom:".4rem",letterSpacing:".08em"}}>💡 GỢI Ý</div>
+                            {spkResult.diff.filter(d=>d.status==="bad").slice(0,3).map((d,i)=>(
+                              <div key={i} style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",color:"#a09ab0",marginBottom:".2rem"}}>
+                                • <b style={{color:"#f87171"}}>{d.spoken}</b> → <b style={{color:"#4ade80"}}>{d.word}</b>
+                                <button className="btn spkbtn" style={{marginLeft:".5rem",fontSize:".68rem",padding:".12rem .45rem"}} onClick={()=>speak(d.word,0.6)}>🔊</button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Actions */}
+                      <div style={{display:"flex",gap:".7rem"}}>
+                        <button className="btn" onClick={()=>setSpkResult(null)}
+                          style={{flex:1,padding:".82rem",borderRadius:14,background:"rgba(167,139,250,.12)",border:"1.5px solid rgba(167,139,250,.25)",color:"#c4b5fd",fontWeight:700,fontSize:".95rem"}}>
+                          🎤 Nói lại
+                        </button>
+                        <button className="btn" onClick={pickWord}
+                          style={{flex:1,padding:".82rem",borderRadius:14,background:"linear-gradient(135deg,#a78bfa,#f472b6)",color:"white",border:"none",fontWeight:700,fontSize:".95rem"}}>
+                          🎯 Từ tiếp theo
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Bottom nav */}
+              {!spkResult && (
+                <div style={{display:"flex",justifyContent:"center",gap:".6rem",marginTop:".8rem"}}>
+                  <button className="btn" onClick={pickWord}
+                    style={{padding:".45rem 1rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#7a6a8a",fontSize:".8rem"}}>
+                    🔀 Đổi từ
+                  </button>
+                  <button className="btn" onClick={()=>setSpkWord(null)}
+                    style={{padding:".45rem 1rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#7a6a8a",fontSize:".8rem"}}>
+                    ↩ Trang chủ
+                  </button>
                 </div>
               )}
             </div>
