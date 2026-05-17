@@ -649,6 +649,7 @@ function VocabApp({ apiKey }) {
         if (row.srs_data) { setSrsData(row.srs_data);  localStorage.setItem("lx_srs", JSON.stringify(row.srs_data)); }
         if (row.known)    { setKnownArr(row.known);    localStorage.setItem("lx_known", JSON.stringify(row.known)); }
         if (row.learning) { setLearningArr(row.learning); localStorage.setItem("lx_learning", JSON.stringify(row.learning)); }
+        if (row.grammar_lessons) { setSavedLessons(row.grammar_lessons); localStorage.setItem("lx_grammar_lessons", JSON.stringify(row.grammar_lessons)); }
         setLastSync(new Date());
       }
       setSyncStatus("ok");
@@ -656,12 +657,12 @@ function VocabApp({ apiKey }) {
   }, []);
 
   // Debounced save — waits 2s after last change before pushing to Supabase
-  const scheduleSave = useCallback((words, srs, known, learning) => {
+  const scheduleSave = useCallback((words, srs, known, learning, lessons) => {
     if (!sb.url || !sb.key) return;
     clearTimeout(syncTimer.current);
     setSyncStatus("syncing");
     syncTimer.current = setTimeout(async () => {
-      await saveToSupabase(sb, { words, srs_data: srs, known, learning });
+      await saveToSupabase(sb, { words, srs_data: srs, known, learning, grammar_lessons: lessons });
       setLastSync(new Date());
       setSyncStatus("ok");
     }, 2000);
@@ -676,8 +677,8 @@ function VocabApp({ apiKey }) {
 
   // Trigger cloud sync whenever any data changes
   useEffect(() => {
-    scheduleSave(allWords, srsData, knownArr, learningArr);
-  }, [allWords, srsData, knownArr, learningArr]);
+    scheduleSave(allWords, srsData, knownArr, learningArr, savedLessons);
+  }, [allWords, srsData, knownArr, learningArr, savedLessons]);
 
   useEffect(() => { setCardIdx(0); setFlipped(false); }, [levelFilter]);
   useEffect(() => { window.speechSynthesis?.getVoices(); }, []);
@@ -687,7 +688,7 @@ function VocabApp({ apiKey }) {
     if (!sb.url || !sb.key) return;
     setSyncStatus("syncing");
     try {
-      await saveToSupabase(sb, { words: allWords, srs_data: srsData, known: knownArr, learning: learningArr });
+      await saveToSupabase(sb, { words: allWords, srs_data: srsData, known: knownArr, learning: learningArr, grammar_lessons: savedLessons });
       setLastSync(new Date());
       setSyncStatus("ok");
     } catch { setSyncStatus("error"); }
