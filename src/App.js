@@ -135,7 +135,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", REVIEW:"review", ADD:"add" };
+const MODES = { FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 function getBestVoice(voices) {
@@ -588,6 +588,7 @@ function VocabApp({ apiKey }) {
   const [writingResult, setWritingResult] = useState(null);
   const [writingLoading, setWritingLoading] = useState(false);
   const [writingHistory, setWritingHistory] = useState([]);
+  const [savedLessons, setSavedLessons] = useState(() => loadState("lx_grammar_lessons", []));
   // Listen & Dictation shared
   const [listenQueue, setListenQueue] = useState([]);
   const [listenIdx, setListenIdx] = useState(0);
@@ -671,6 +672,7 @@ function VocabApp({ apiKey }) {
   useEffect(() => { try { localStorage.setItem("lx_srs", JSON.stringify(srsData)); } catch {} }, [srsData]);
   useEffect(() => { try { localStorage.setItem("lx_known", JSON.stringify(knownArr)); } catch {} }, [knownArr]);
   useEffect(() => { try { localStorage.setItem("lx_learning", JSON.stringify(learningArr)); } catch {} }, [learningArr]);
+  useEffect(() => { try { localStorage.setItem("lx_grammar_lessons", JSON.stringify(savedLessons)); } catch {} }, [savedLessons]);
 
   // Trigger cloud sync whenever any data changes
   useEffect(() => {
@@ -919,6 +921,7 @@ function VocabApp({ apiKey }) {
     [MODES.WRITING]:"✏️ Writing",
     [MODES.SPEAKING]:"🎤 Speaking",
     [MODES.CONVO]:"💬 Hội thoại",
+    [MODES.GRAMMAR]: savedLessons.length > 0 ? `📒 Grammar (${savedLessons.length})` : "📒 Grammar",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
   };
@@ -1876,18 +1879,34 @@ function VocabApp({ apiKey }) {
                       {writingResult.lessons?.length > 0 && (
                         <div style={{marginBottom:"1rem"}}>
                           <div style={{fontSize:".7rem",color:"#6a5a7a",letterSpacing:".1em",textTransform:"uppercase",marginBottom:".6rem"}}>📚 Bài học từ câu này</div>
-                          {writingResult.lessons.map((lesson,i)=>(
-                            <div key={i} className="lesson-card" style={{borderColor:"rgba(167,139,250,.18)"}}>
-                              <h4 style={{color:"#c4b5fd"}}>📖 {lesson.title}</h4>
-                              <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
-                              {lesson.example && (
-                                <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .7rem"}}>
-                                  <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
-                                  <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
+                          {writingResult.lessons.map((lesson,i)=>{
+                            const alreadySaved = savedLessons.some(l => l.title === lesson.title);
+                            return (
+                              <div key={i} className="lesson-card" style={{borderColor: alreadySaved ? "rgba(74,222,128,.25)" : "rgba(167,139,250,.18)"}}>
+                                <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:".5rem",marginBottom:".35rem"}}>
+                                  <h4 style={{color: alreadySaved ? "#4ade80" : "#c4b5fd",flex:1}}>📖 {lesson.title}</h4>
+                                  <button className="btn" onClick={()=>{
+                                    if(alreadySaved) return;
+                                    const entry = { ...lesson, word: writingWord?.word, savedAt: Date.now() };
+                                    setSavedLessons(prev => [entry, ...prev]);
+                                  }} style={{padding:".2rem .6rem",borderRadius:8,fontSize:".72rem",fontWeight:700,
+                                    background: alreadySaved ? "rgba(74,222,128,.12)" : "rgba(167,139,250,.15)",
+                                    border: `1px solid ${alreadySaved ? "rgba(74,222,128,.3)" : "rgba(167,139,250,.3)"}`,
+                                    color: alreadySaved ? "#4ade80" : "#c4b5fd",
+                                    cursor: alreadySaved ? "default" : "pointer", whiteSpace:"nowrap"}}>
+                                    {alreadySaved ? "✓ Đã lưu" : "💾 Lưu lại"}
+                                  </button>
                                 </div>
-                              )}
-                            </div>
-                          ))}
+                                <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
+                                {lesson.example && (
+                                  <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .7rem"}}>
+                                    <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
+                                    <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
 
@@ -2636,6 +2655,70 @@ function VocabApp({ apiKey }) {
             </div>
           );
         })()}
+
+
+        {/* ══ GRAMMAR NOTEBOOK ══ */}
+        {mode===MODES.GRAMMAR && (
+          <div>
+            {savedLessons.length === 0 ? (
+              <div style={{textAlign:"center",padding:"3rem 1rem"}}>
+                <div style={{fontSize:"3rem",marginBottom:".8rem"}}>📒</div>
+                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",color:"#8a7a9a",marginBottom:".4rem"}}>Chưa có bài học nào được lưu</div>
+                <div style={{fontSize:".87rem",color:"#5a4a6a",fontFamily:"'Crimson Pro',serif"}}>
+                  Trong tab ✏️ Writing, nhấn <b style={{color:"#c4b5fd"}}>💾 Lưu lại</b> ở những bài học hay để lưu vào đây.
+                </div>
+              </div>
+            ) : (
+              <div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".9rem"}}>
+                  <div style={{fontSize:".75rem",color:"#8a7a9a"}}>📒 {savedLessons.length} bài học đã lưu</div>
+                  <button className="btn" onClick={()=>{if(window.confirm("Xoá tất cả bài học đã lưu?")) setSavedLessons([]);}}
+                    style={{padding:".28rem .7rem",borderRadius:8,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.18)",color:"#f87171",fontSize:".72rem"}}>
+                    🗑 Xoá tất cả
+                  </button>
+                </div>
+
+                {savedLessons.map((lesson, i) => (
+                  <div key={i} className="lesson-card" style={{borderColor:"rgba(167,139,250,.2)",marginBottom:".8rem",position:"relative"}}>
+                    {/* Header */}
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:".5rem",marginBottom:".4rem"}}>
+                      <div style={{flex:1}}>
+                        <h4 style={{color:"#c4b5fd",marginBottom:".1rem"}}>📖 {lesson.title}</h4>
+                        {lesson.word && (
+                          <span style={{fontSize:".65rem",color:"#5a4a6a",background:"rgba(167,139,250,.08)",borderRadius:6,padding:"1px 7px"}}>
+                            từ: {lesson.word}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{display:"flex",gap:".4rem",alignItems:"center",flexShrink:0}}>
+                        <span style={{fontSize:".65rem",color:"#4a3a5a"}}>
+                          {new Date(lesson.savedAt).toLocaleDateString("vi-VN")}
+                        </span>
+                        <button className="btn" onClick={()=>setSavedLessons(prev=>prev.filter((_,j)=>j!==i))}
+                          style={{padding:".18rem .5rem",borderRadius:6,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.15)",color:"#f87171",fontSize:".68rem"}}>
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Explanation */}
+                    <div style={{fontSize:".9rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.75,marginBottom:".5rem"}}>
+                      {lesson.explanation}
+                    </div>
+
+                    {/* Example */}
+                    {lesson.example && (
+                      <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .75rem"}}>
+                        <span style={{fontSize:".85rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
+                        <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ══ REVIEW ══ */}
         {mode===MODES.REVIEW && (
