@@ -135,7 +135,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", REVIEW:"review", ADD:"add" };
+const MODES = { FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 function getBestVoice(voices) {
@@ -470,6 +470,79 @@ Reply with ONLY the sentence, no quotes, no explanation.`;
   return sentence;
 }
 
+
+// ─── Claude API — Generate Conversation Script ────────────────────────────
+async function generateConvoScript(topic, level, words, apiKey) {
+  const wordHint = words.length > 0
+    ? `Try to naturally include 1-2 of these vocabulary words: ${words.slice(0,4).map(w=>w.word).join(", ")}.`
+    : "";
+  const prompt = `Create a natural 2-person English conversation for a Vietnamese learner at ${level} level.
+Topic: "${topic || "daily life, travel, or work"}"
+${wordHint}
+
+Rules:
+- 5-7 turns total (alternating AI then User)
+- AI speaks first
+- Each turn: 1-2 natural sentences, realistic dialogue
+- User turns should be achievable for ${level} level
+- No greetings/farewells needed, dive into the topic
+- Keep it conversational, not textbook-stiff
+
+Reply ONLY with this JSON (no markdown):
+{"topic":"<topic in Vietnamese>","turns":[{"role":"ai","text":"<AI says this>"},{"role":"user","prompt":"<hint in Vietnamese: what the user should say>","ideal":"<ideal English response>"}]}
+
+Alternate strictly: ai, user, ai, user... Start with ai.`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST",
+    headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:900,
+      system:"Output ONLY raw JSON. No markdown. No explanation.",
+      messages:[{role:"user",content:prompt}]})
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error("Phản hồi không hợp lệ");
+  const parsed = JSON.parse(m[0]);
+  if (!parsed.turns || parsed.turns.length < 2) throw new Error("Kịch bản không hợp lệ");
+  return parsed;
+}
+
+// ─── Claude API — Review Full Conversation ────────────────────────────────
+async function reviewConversation(turns, apiKey) {
+  const transcript = turns
+    .filter(t => t.role === "user" && t.userSaid)
+    .map((t,i) => `User turn ${i+1}:\n  Said: "${t.userSaid}"\n  Ideal: "${t.ideal}"`)
+    .join("\n");
+
+  const prompt = `Review this English conversation from a Vietnamese learner. Analyze each user turn.
+
+${transcript}
+
+For each user turn, provide:
+1. Pronunciation score estimate (based on similarity to ideal, 0-100)
+2. Grammar corrections if needed
+3. More natural/refined version
+4. One specific tip
+
+Reply ONLY with raw JSON (no markdown, no unescaped quotes inside strings):
+{"overallScore":75,"summary":"tong ket bang tieng Viet","turns":[{"turnIndex":1,"said":"what they said","refined":"more natural version","grammarNote":"grammar fix or empty string","pronunciationTip":"one phonetic tip","score":80}]}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST",
+    headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:1200,
+      system:"You are an English conversation coach. Output ONLY compact single-line JSON. Never use unescaped double quotes inside string values.",
+      messages:[{role:"user",content:prompt}]})
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc review: " + e.message); }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
   const [allWords, setAllWords] = useState(() => loadState("lx_words", BUILT_IN));
@@ -533,6 +606,19 @@ function VocabApp({ apiKey }) {
   const [spkPlaying, setSpkPlaying] = useState(false);
   const [spkHistory, setSpkHistory] = useState([]); // [{word, score, ts}]
   const recognitionRef = useRef(null);
+  // Conversation mode
+  const [convoScript, setConvoScript] = useState(null);   // [{role:"ai"|"user", text, prompt}]
+  const [convoTurn, setConvoTurn]     = useState(0);       // current turn index
+  const [convoLog, setConvoLog]       = useState([]);       // [{role, text, userSaid, score, diff}]
+  const [convoListening, setConvoListening] = useState(false);
+  const [convoPlaying, setConvoPlaying]     = useState(false);
+  const [convoLoading, setConvoLoading]     = useState(false);
+  const [convoReview, setConvoReview]       = useState(null); // full review from AI
+  const [convoReviewLoading, setConvoReviewLoading] = useState(false);
+  const [convoPhase, setConvoPhase]   = useState("setup"); // setup|convo|review
+  const [convoTopic, setConvoTopic]   = useState("");
+  const [convoLevel, setConvoLevel]   = useState("B1");
+  const convoRecRef = useRef(null);
   const [showSbSetup, setShowSbSetup] = useState(false);
   const [sbForm, setSbForm] = useState({ url: "", key: "", syncId: "" });
   const [sbTesting, setSbTesting] = useState(false);
@@ -796,6 +882,12 @@ function VocabApp({ apiKey }) {
     @keyframes micpulse{0%,100%{box-shadow:0 0 0 0 rgba(248,113,113,.4)}50%{box-shadow:0 0 0 14px rgba(248,113,113,.0)}}
     .score-ring{transform:rotate(-90deg);transform-origin:50%;}
     .spk-tab{padding:.35rem .9rem;border-radius:999px;font-size:.78rem;font-weight:700;cursor:pointer;border:1.5px solid;transition:all .2s;}
+    .chat-bubble-ai{background:linear-gradient(135deg,rgba(96,165,250,.12),rgba(129,140,248,.08));border:1px solid rgba(96,165,250,.2);border-radius:18px 18px 18px 4px;padding:.75rem 1rem;margin-bottom:.6rem;max-width:88%;}
+    .chat-bubble-user{background:linear-gradient(135deg,rgba(167,139,250,.15),rgba(236,72,153,.1));border:1px solid rgba(167,139,250,.22);border-radius:18px 18px 4px 18px;padding:.75rem 1rem;margin-bottom:.6rem;max-width:88%;margin-left:auto;}
+    .chat-bubble-user-err{background:linear-gradient(135deg,rgba(248,113,113,.12),rgba(251,191,36,.08));border:1px solid rgba(248,113,113,.2);border-radius:18px 18px 4px 18px;padding:.75rem 1rem;margin-bottom:.6rem;max-width:88%;margin-left:auto;}
+    .review-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .pulse-rec{animation:recpulse 1.2s ease-in-out infinite;}
+    @keyframes recpulse{0%,100%{opacity:1}50%{opacity:.4}}
     .writing-area{width:100%;background:rgba(255,255,255,.05);border:2px solid rgba(255,255,255,.1);border-radius:14px;padding:.9rem 1rem;color:#e8e0f0;font-family:'Crimson Pro',serif;font-size:1.05rem;outline:none;transition:all .25s;line-height:1.7;resize:none;min-height:110px;}
     .writing-area:focus{border-color:#f472b6;background:rgba(244,114,182,.06);}
     .tag{display:inline-flex;align-items:center;padding:.18rem .65rem;border-radius:999px;font-size:.72rem;font-weight:700;letter-spacing:.04em;}
@@ -821,6 +913,7 @@ function VocabApp({ apiKey }) {
     [MODES.DICTATION]:"🎧 Chép chính tả",
     [MODES.WRITING]:"✏️ Writing",
     [MODES.SPEAKING]:"🎤 Speaking",
+    [MODES.CONVO]:"💬 Hội thoại",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
   };
@@ -2101,6 +2194,367 @@ function VocabApp({ apiKey }) {
                   </button>
                 </div>
               )}
+            </div>
+          );
+        })()}
+
+
+        {/* ══ CONVERSATION MODE ══ */}
+        {mode===MODES.CONVO && (() => {
+
+          // Word-level similarity (reuse from speaking)
+          const normalize = s => s.toLowerCase().trim().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
+          const wordScore = (spoken, target) => {
+            const s = normalize(spoken).split(" ");
+            const t = normalize(target).split(" ");
+            if (!t.length) return 0;
+            let matched = 0;
+            t.forEach((tw,i) => {
+              const sw = s[i]||"";
+              if (sw===tw) { matched+=1; return; }
+              let m=0;
+              for (let j=0;j<Math.min(sw.length,tw.length);j++) if(sw[j]===tw[j]) m++;
+              matched += (m/Math.max(sw.length,tw.length,1))*0.6;
+            });
+            return Math.round((matched/t.length)*100);
+          };
+          const charDiff = (spoken, target) => normalize(target).split(" ").map((tw,i)=>{
+            const sw = normalize(spoken).split(" ")[i]||"";
+            if(sw===tw) return {word:tw,status:"ok"};
+            if(!sw) return {word:tw,status:"miss"};
+            return {word:tw,spoken:sw,status:"bad"};
+          });
+          const scoreColor = s => s>=85?"#4ade80":s>=65?"#fbbf24":"#f87171";
+
+          const currentTurn = convoScript?.turns?.[convoTurn];
+          const isUserTurn = currentTurn?.role === "user";
+          const isLastTurn = convoScript && convoTurn >= convoScript.turns.length;
+
+          // Play AI line with TTS
+          const playAI = (text, onDone) => {
+            setConvoPlaying(true);
+            speak(text, 0.82);
+            const est = Math.max(1500, text.length * 75);
+            setTimeout(() => { setConvoPlaying(false); if(onDone) onDone(); }, est);
+          };
+
+          // Auto-advance AI turn
+          const advanceAI = (turnIdx, script) => {
+            const t = (script||convoScript).turns[turnIdx];
+            if (!t || t.role !== "ai") return;
+            setConvoLog(prev => [...prev, {role:"ai", text:t.text}]);
+            playAI(t.text, () => setConvoTurn(turnIdx+1));
+          };
+
+          // Start listening for user
+          const listenUser = () => {
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) return;
+            const rec = new SR();
+            convoRecRef.current = rec;
+            rec.lang = "en-US"; rec.continuous = false; rec.interimResults = false; rec.maxAlternatives = 3;
+            rec.onstart = () => setConvoListening(true);
+            rec.onend   = () => setConvoListening(false);
+            rec.onerror = (e) => { setConvoListening(false); };
+            rec.onresult = (e) => {
+              const ideal = currentTurn?.ideal || "";
+              let best="", bestScore=-1;
+              for (let i=0;i<e.results[0].length;i++){
+                const t=e.results[0][i].transcript;
+                const s=wordScore(t,ideal);
+                if(s>bestScore){bestScore=s;best=t;}
+              }
+              const diff = charDiff(best, ideal);
+              const logEntry = {role:"user",text:currentTurn.prompt,userSaid:best,ideal,score:bestScore,diff};
+              setConvoLog(prev => {
+                const next = [...prev, logEntry];
+                // advance after state update
+                setTimeout(() => {
+                  const nextIdx = convoTurn+1;
+                  setConvoTurn(nextIdx);
+                  if (nextIdx < convoScript.turns.length) {
+                    // slight delay then play next AI line
+                    setTimeout(() => advanceAI(nextIdx, convoScript), 600);
+                  }
+                }, 100);
+                return next;
+              });
+            };
+            rec.start();
+          };
+
+          // Generate new script
+          const startConvo = async () => {
+            setConvoLoading(true);
+            setConvoLog([]); setConvoTurn(0); setConvoReview(null); setConvoPhase("convo");
+            try {
+              const script = await generateConvoScript(convoTopic, convoLevel, allWords, apiKey);
+              setConvoScript(script);
+              // Start with first AI turn
+              setTimeout(() => advanceAI(0, script), 400);
+            } catch(e) {
+              setConvoPhase("setup");
+              alert("Lỗi tạo hội thoại: " + e.message);
+            } finally {
+              setConvoLoading(false);
+            }
+          };
+
+          // Get full review
+          const getReview = async () => {
+            const userTurns = convoLog.filter(t=>t.role==="user");
+            if (!userTurns.length) return;
+            setConvoReviewLoading(true);
+            try {
+              const review = await reviewConversation(convoLog, apiKey);
+              setConvoReview(review);
+              setConvoPhase("review");
+            } catch(e) {
+              alert("Lỗi review: " + e.message);
+            } finally {
+              setConvoReviewLoading(false);
+            }
+          };
+
+          // ── SETUP SCREEN ───────────────────────────────────────────────
+          if (convoPhase==="setup") return (
+            <div>
+              <div style={{background:"linear-gradient(145deg,rgba(96,165,250,.07),rgba(129,140,248,.05))",border:"1px solid rgba(96,165,250,.18)",borderRadius:20,padding:"1.3rem",marginBottom:"1.1rem"}}>
+                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#93c5fd",marginBottom:".3rem"}}>💬 Luyện hội thoại</div>
+                <div style={{fontSize:".83rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+                  AI tạo kịch bản hội thoại, bạn đóng vai người dùng. Nói tự nhiên, không ngắt quãng. Cuối bài xem review toàn bộ.
+                </div>
+              </div>
+
+              <div style={{marginBottom:".7rem"}}>
+                <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Chủ đề (để trống = AI tự chọn)</div>
+                <input className="fi" placeholder="vd: đặt phòng khách sạn, phỏng vấn xin việc, mua sắm..."
+                  value={convoTopic} onChange={e=>setConvoTopic(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&!convoLoading&&startConvo()} />
+              </div>
+
+              <div style={{marginBottom:"1rem"}}>
+                <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Cấp độ của bạn</div>
+                <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                  {["A2","B1","B2","C1"].map(lv=>(
+                    <button key={lv} className="btn" onClick={()=>setConvoLevel(lv)}
+                      style={{padding:".32rem .85rem",borderRadius:999,border:`1.5px solid ${convoLevel===lv?LC[lv]+"cc":LC[lv]+"44"}`,background:convoLevel===lv?LC[lv]+"22":"transparent",color:convoLevel===lv?LC[lv]:"#5a4a6a",fontSize:".8rem",fontWeight:700}}>
+                      {lv}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button className="btn" onClick={startConvo} disabled={convoLoading}
+                style={{width:"100%",padding:".9rem",borderRadius:14,background:convoLoading?"rgba(96,165,250,.2)":"linear-gradient(135deg,#60a5fa,#818cf8)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                {convoLoading ? "⏳ Đang tạo hội thoại..." : "🚀 Bắt đầu hội thoại"}
+              </button>
+              {convoLoading && (
+                <div style={{marginTop:"1rem"}}>
+                  {[85,60,75,50].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:9,width:`${w}%`}}/>)}
+                </div>
+              )}
+            </div>
+          );
+
+          // ── REVIEW SCREEN ──────────────────────────────────────────────
+          if (convoPhase==="review" && convoReview) return (
+            <div>
+              {/* Overall score */}
+              <div style={{background:"rgba(0,0,0,.3)",border:`2px solid ${scoreColor(convoReview.overallScore)}44`,borderRadius:18,padding:"1rem 1.2rem",marginBottom:"1rem",display:"flex",gap:"1rem",alignItems:"center"}}>
+                <div style={{textAlign:"center",minWidth:64}}>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2.2rem",fontWeight:900,color:scoreColor(convoReview.overallScore),lineHeight:1}}>{convoReview.overallScore}</div>
+                  <div style={{fontSize:".6rem",color:"#5a4a6a"}}>/100</div>
+                </div>
+                <div style={{flex:1}}>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1rem",color:"#f0eaff",marginBottom:".25rem"}}>Tổng kết hội thoại</div>
+                  <div style={{fontSize:".85rem",color:"#9a8aaa",fontFamily:"'Crimson Pro',serif",lineHeight:1.5}}>{convoReview.summary}</div>
+                </div>
+              </div>
+
+              {/* Per-turn review */}
+              <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".6rem"}}>📋 Chi tiết từng lượt nói</div>
+              {(convoReview.turns||[]).map((t,i)=>(
+                <div key={i} className="review-card">
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".5rem"}}>
+                    <div style={{fontSize:".72rem",color:"#6a5a7a"}}>Lượt {t.turnIndex}</div>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontWeight:900,fontSize:"1.1rem",color:scoreColor(t.score||70)}}>{t.score||"—"}<span style={{fontSize:".6rem",color:"#5a4a6a"}}>/100</span></div>
+                  </div>
+
+                  {/* What they said */}
+                  <div style={{marginBottom:".5rem"}}>
+                    <div style={{fontSize:".65rem",color:"#f87171",letterSpacing:".06em",marginBottom:".2rem"}}>BẠN ĐÃ NÓI</div>
+                    <div className="chat-bubble-user-err" style={{fontSize:".9rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0",margin:0}}>{t.said}</div>
+                  </div>
+
+                  {/* Refined version */}
+                  <div style={{marginBottom:".5rem"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:".5rem",marginBottom:".2rem"}}>
+                      <div style={{fontSize:".65rem",color:"#4ade80",letterSpacing:".06em"}}>CÂU TỰ NHIÊN HƠN</div>
+                      <button className="spkbtn btn" style={{fontSize:".65rem",padding:".12rem .45rem"}} onClick={()=>speak(t.refined,0.82)}>🔊</button>
+                    </div>
+                    <div className="chat-bubble-ai" style={{fontSize:".9rem",fontFamily:"'Crimson Pro',serif",color:"#93c5fd",margin:0,fontStyle:"italic"}}>{t.refined}</div>
+                  </div>
+
+                  {/* Grammar note */}
+                  {t.grammarNote && (
+                    <div style={{fontSize:".8rem",color:"#fbbf24",fontFamily:"'Crimson Pro',serif",padding:".4rem .7rem",background:"rgba(251,191,36,.07)",borderRadius:8,marginBottom:".4rem"}}>
+                      📐 {t.grammarNote}
+                    </div>
+                  )}
+
+                  {/* Pronunciation tip */}
+                  {t.pronunciationTip && (
+                    <div style={{fontSize:".8rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif",padding:".4rem .7rem",background:"rgba(167,139,250,.07)",borderRadius:8}}>
+                      🎤 {t.pronunciationTip}
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              {/* Full transcript */}
+              <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".08em",textTransform:"uppercase",margin:"1rem 0 .6rem"}}>📜 Toàn bộ hội thoại</div>
+              {convoLog.map((t,i)=>(
+                <div key={i} style={{marginBottom:".5rem"}}>
+                  {t.role==="ai" ? (
+                    <div>
+                      <div style={{fontSize:".65rem",color:"#60a5fa",marginBottom:".2rem",display:"flex",alignItems:"center",gap:".4rem"}}>
+                        🤖 AI
+                        <button className="spkbtn btn" style={{fontSize:".62rem",padding:".1rem .4rem"}} onClick={()=>speak(t.text,0.82)}>🔊</button>
+                      </div>
+                      <div className="chat-bubble-ai" style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0"}}>{t.text}</div>
+                    </div>
+                  ) : (
+                    <div style={{textAlign:"right"}}>
+                      <div style={{fontSize:".65rem",color:"#a78bfa",marginBottom:".2rem"}}>👤 Bạn</div>
+                      <div className="chat-bubble-user" style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0"}}>
+                        {t.userSaid || <i style={{color:"#5a4a6a"}}>Không nghe được</i>}
+                        {t.score !== undefined && (
+                          <span style={{display:"block",fontSize:".65rem",color:scoreColor(t.score),marginTop:".2rem"}}>Độ chính xác: {t.score}/100</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+
+              <div style={{display:"flex",gap:".7rem",marginTop:"1rem"}}>
+                <button className="btn" onClick={()=>{setConvoPhase("setup");setConvoScript(null);setConvoLog([]);setConvoTurn(0);setConvoReview(null);}}
+                  style={{flex:1,padding:".85rem",borderRadius:14,background:"rgba(96,165,250,.12)",border:"1.5px solid rgba(96,165,250,.25)",color:"#93c5fd",fontWeight:700,fontSize:".95rem"}}>
+                  💬 Hội thoại mới
+                </button>
+                <button className="btn" onClick={startConvo} disabled={convoLoading}
+                  style={{flex:1,padding:".85rem",borderRadius:14,background:"linear-gradient(135deg,#60a5fa,#818cf8)",color:"white",border:"none",fontWeight:700,fontSize:".95rem"}}>
+                  🔄 Chủ đề này lại
+                </button>
+              </div>
+            </div>
+          );
+
+          // ── CONVERSATION SCREEN ─────────────────────────────────────────
+          return (
+            <div>
+              {/* Topic badge */}
+              {convoScript && (
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".8rem"}}>
+                  <div style={{fontSize:".75rem",color:"#60a5fa",background:"rgba(96,165,250,.1)",border:"1px solid rgba(96,165,250,.2)",borderRadius:999,padding:".2rem .8rem"}}>
+                    💬 {convoScript.topic}
+                  </div>
+                  <div style={{fontSize:".72rem",color:"#5a4a6a"}}>
+                    {convoTurn}/{convoScript.turns.length} lượt
+                  </div>
+                </div>
+              )}
+
+              {/* Chat log */}
+              <div style={{minHeight:200,marginBottom:"1rem"}}>
+                {convoLog.map((t,i)=>(
+                  <div key={i} style={{marginBottom:".6rem"}}>
+                    {t.role==="ai" ? (
+                      <div>
+                        <div style={{fontSize:".62rem",color:"#60a5fa",marginBottom:".18rem",display:"flex",alignItems:"center",gap:".35rem"}}>
+                          🤖 AI
+                          <button className="spkbtn btn" style={{fontSize:".6rem",padding:".1rem .4rem"}} onClick={()=>speak(t.text,0.82)}>🔊</button>
+                        </div>
+                        <div className="chat-bubble-ai" style={{fontSize:".95rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0"}}>{t.text}</div>
+                      </div>
+                    ) : (
+                      <div style={{textAlign:"right"}}>
+                        <div style={{fontSize:".62rem",color:"#a78bfa",marginBottom:".18rem"}}>👤 Bạn</div>
+                        <div className="chat-bubble-user" style={{fontSize:".95rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0"}}>
+                          {t.userSaid || <i style={{color:"#5a4a6a"}}>...</i>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                {/* AI is speaking indicator */}
+                {convoPlaying && (
+                  <div style={{display:"flex",gap:".3rem",alignItems:"center",padding:".5rem .9rem",width:"fit-content"}}>
+                    {[0,1,2].map(i=><div key={i} className="pulse-rec" style={{width:8,height:8,borderRadius:"50%",background:"#60a5fa",animationDelay:`${i*0.2}s`}}/>)}
+                  </div>
+                )}
+              </div>
+
+              {/* User turn area */}
+              {!isLastTurn && isUserTurn && !convoPlaying && (
+                <div style={{background:"rgba(167,139,250,.05)",border:"1px solid rgba(167,139,250,.15)",borderRadius:16,padding:"1rem",marginBottom:"1rem"}}>
+                  <div style={{fontSize:".72rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem",lineHeight:1.5}}>
+                    💡 <b style={{color:"#c4b5fd"}}>Gợi ý:</b> {currentTurn?.prompt}
+                  </div>
+                  <div style={{textAlign:"center"}}>
+                    <button className={`mic-btn btn ${convoListening?"listening":"idle"}`} onClick={()=>{
+                      if(convoListening){convoRecRef.current?.stop();}
+                      else listenUser();
+                    }}>
+                      {convoListening ? "⏹" : "🎤"}
+                    </button>
+                    <div style={{fontSize:".75rem",color:convoListening?"#f87171":"#5a4a6a",marginTop:".5rem",fontFamily:"'Crimson Pro',serif"}}>
+                      {convoListening ? "🔴 Đang ghi âm — nói đi rồi nhấn ⏹" : "Nhấn 🎤 và nói câu trả lời của bạn"}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Conversation ended */}
+              {isLastTurn && (
+                <div style={{textAlign:"center",padding:"1rem",background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.18)",borderRadius:16,marginBottom:"1rem"}}>
+                  <div style={{fontSize:"1.8rem",marginBottom:".4rem"}}>🎉</div>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:"#4ade80",marginBottom:".6rem"}}>Hội thoại hoàn thành!</div>
+                  <button className="btn" onClick={getReview} disabled={convoReviewLoading}
+                    style={{padding:".82rem 2rem",borderRadius:14,background:convoReviewLoading?"rgba(167,139,250,.2)":"linear-gradient(135deg,#a78bfa,#ec4899)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                    {convoReviewLoading ? "⏳ AI đang phân tích..." : "📊 Xem review chi tiết"}
+                  </button>
+                  {convoReviewLoading && (
+                    <div style={{marginTop:".8rem"}}>
+                      {[80,60,70,50].map((w,i)=><div key={i} className="shimmer" style={{height:11,borderRadius:6,marginBottom:8,width:`${w}%`,margin:"0 auto 8px"}}/>)}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Skip / quit */}
+              <div style={{display:"flex",gap:".5rem",justifyContent:"center"}}>
+                {isUserTurn && !convoListening && !isLastTurn && (
+                  <button className="btn" onClick={()=>{
+                    const logEntry={role:"user",text:currentTurn?.prompt,userSaid:"(bỏ qua)",ideal:currentTurn?.ideal,score:0,diff:[]};
+                    setConvoLog(prev=>[...prev,logEntry]);
+                    const nextIdx=convoTurn+1;
+                    setConvoTurn(nextIdx);
+                    if(nextIdx<convoScript.turns.length) setTimeout(()=>advanceAI(nextIdx,convoScript),300);
+                  }} style={{padding:".42rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
+                    ⏭ Bỏ qua lượt này
+                  </button>
+                )}
+                <button className="btn" onClick={()=>{
+                  convoRecRef.current?.stop();
+                  window.speechSynthesis?.cancel();
+                  setConvoPhase("setup"); setConvoScript(null); setConvoLog([]); setConvoTurn(0);
+                }} style={{padding:".42rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
+                  ✕ Thoát
+                </button>
+              </div>
             </div>
           );
         })()}
