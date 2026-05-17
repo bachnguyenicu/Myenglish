@@ -618,7 +618,12 @@ function VocabApp({ apiKey }) {
   const [convoPhase, setConvoPhase]   = useState("setup"); // setup|convo|review
   const [convoTopic, setConvoTopic]   = useState("");
   const [convoLevel, setConvoLevel]   = useState("B1");
-  const convoRecRef = useRef(null);
+  const convoRecRef   = useRef(null);
+  const convoTurnRef  = useRef(0);      // mirrors convoTurn but always fresh in callbacks
+  const convoScriptRef = useRef(null);  // mirrors convoScript but always fresh
+  const convoLogRef   = useRef([]);     // mirrors convoLog but always fresh
+  const convoResultPending = useRef(false); // guard against duplicate onresult fires
+  const [convoLiveText, setConvoLiveText] = useState("");
   const [showSbSetup, setShowSbSetup] = useState(false);
   const [sbForm, setSbForm] = useState({ url: "", key: "", syncId: "" });
   const [sbTesting, setSbTesting] = useState(false);
@@ -2230,68 +2235,130 @@ function VocabApp({ apiKey }) {
           const isUserTurn = currentTurn?.role === "user";
           const isLastTurn = convoScript && convoTurn >= convoScript.turns.length;
 
-          // Play AI line with TTS
+          // ── Keep refs in sync ──────────────────────────────────────────
+          convoTurnRef.current   = convoTurn;
+          convoScriptRef.current = convoScript;
+          convoLogRef.current    = convoLog;
+
+          // Play AI line with TTS — uses refs so always fresh
           const playAI = (text, onDone) => {
+            window.speechSynthesis?.cancel();
             setConvoPlaying(true);
             speak(text, 0.82);
-            const est = Math.max(1500, text.length * 75);
-            setTimeout(() => { setConvoPlaying(false); if(onDone) onDone(); }, est);
+            const est = Math.max(2000, text.length * 80);
+            setTimeout(() => { setConvoPlaying(false); if (onDone) onDone(); }, est);
           };
 
-          // Auto-advance AI turn
-          const advanceAI = (turnIdx, script) => {
-            const t = (script||convoScript).turns[turnIdx];
+          // Advance an AI turn — pure ref-based, no stale closure
+          const advanceAI = (turnIdx) => {
+            const script = convoScriptRef.current;
+            if (!script || turnIdx >= script.turns.length) return;
+            const t = script.turns[turnIdx];
             if (!t || t.role !== "ai") return;
-            setConvoLog(prev => [...prev, {role:"ai", text:t.text}]);
-            playAI(t.text, () => setConvoTurn(turnIdx+1));
+            // Guard: don't add if already logged
+            if (convoLogRef.current.some((l,i) => i === convoLogRef.current.length-1 && l.role==="ai" && l.text===t.text && convoLogRef.current.length > 0)) return;
+            const entry = {role:"ai", text:t.text};
+            convoLogRef.current = [...convoLogRef.current, entry];
+            setConvoLog([...convoLogRef.current]);
+            convoTurnRef.current = turnIdx + 1;
+            setConvoTurn(turnIdx + 1);
+            playAI(t.text, () => {
+              // After AI speaks, nothing auto-fires — user must press mic
+            });
           };
 
-          // Start listening for user
+          // Stop current recording
+          const stopListening = () => {
+            try { convoRecRef.current?.stop(); } catch(_) {}
+            setConvoListening(false);
+            convoResultPending.current = false;
+          };
+
+          // Start listening — continuous mode, user presses stop when done
           const listenUser = () => {
             const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SR) return;
+            if (!SR) { alert("Trình duyệt không hỗ trợ. Dùng Chrome hoặc Safari."); return; }
+            if (convoListening) { stopListening(); return; }
+
+            convoResultPending.current = false;
             const rec = new SR();
             convoRecRef.current = rec;
-            rec.lang = "en-US"; rec.continuous = false; rec.interimResults = false; rec.maxAlternatives = 3;
-            rec.onstart = () => setConvoListening(true);
-            rec.onend   = () => setConvoListening(false);
-            rec.onerror = (e) => { setConvoListening(false); };
-            rec.onresult = (e) => {
-              const ideal = currentTurn?.ideal || "";
-              let best="", bestScore=-1;
-              for (let i=0;i<e.results[0].length;i++){
-                const t=e.results[0][i].transcript;
-                const s=wordScore(t,ideal);
-                if(s>bestScore){bestScore=s;best=t;}
+
+            // continuous: true so it keeps listening until user stops
+            rec.lang = "en-US";
+            rec.continuous = true;
+            rec.interimResults = true;   // show interim so user sees feedback
+            rec.maxAlternatives = 1;
+
+            let finalTranscript = "";
+            let interimDisplay  = "";
+
+            rec.onstart = () => { setConvoListening(true); finalTranscript = ""; };
+            rec.onend   = () => {
+              setConvoListening(false);
+              // Only process if user actually said something and hasn't been processed yet
+              if (!finalTranscript.trim() || convoResultPending.current) return;
+              convoResultPending.current = true;
+
+              const turnIdx  = convoTurnRef.current;
+              const script   = convoScriptRef.current;
+              if (!script || turnIdx >= script.turns.length) return;
+              const turn = script.turns[turnIdx];
+              if (!turn || turn.role !== "user") return;
+
+              const ideal    = turn.ideal || "";
+              const best     = finalTranscript.trim();
+              const score    = wordScore(best, ideal);
+              const diff     = charDiff(best, ideal);
+              const logEntry = {role:"user", text:turn.prompt, userSaid:best, ideal, score, diff};
+
+              convoLogRef.current = [...convoLogRef.current, logEntry];
+              setConvoLog([...convoLogRef.current]);
+
+              const nextIdx = turnIdx + 1;
+              convoTurnRef.current = nextIdx;
+              setConvoTurn(nextIdx);
+
+              // Advance to next AI turn after short pause
+              if (nextIdx < script.turns.length && script.turns[nextIdx]?.role === "ai") {
+                setTimeout(() => advanceAI(nextIdx), 700);
               }
-              const diff = charDiff(best, ideal);
-              const logEntry = {role:"user",text:currentTurn.prompt,userSaid:best,ideal,score:bestScore,diff};
-              setConvoLog(prev => {
-                const next = [...prev, logEntry];
-                // advance after state update
-                setTimeout(() => {
-                  const nextIdx = convoTurn+1;
-                  setConvoTurn(nextIdx);
-                  if (nextIdx < convoScript.turns.length) {
-                    // slight delay then play next AI line
-                    setTimeout(() => advanceAI(nextIdx, convoScript), 600);
-                  }
-                }, 100);
-                return next;
-              });
             };
+
+            rec.onerror = (e) => {
+              if (e.error === "no-speech" || e.error === "aborted") return;
+              setConvoListening(false);
+            };
+
+            rec.onresult = (e) => {
+              finalTranscript = "";
+              interimDisplay  = "";
+              for (let i = e.resultIndex; i < e.results.length; i++) {
+                if (e.results[i].isFinal) finalTranscript += e.results[i][0].transcript + " ";
+                else interimDisplay += e.results[i][0].transcript;
+              }
+              // Update a live preview — stored in a temporary state
+              setConvoLiveText((finalTranscript + interimDisplay).trim());
+            };
+
             rec.start();
           };
 
           // Generate new script
           const startConvo = async () => {
             setConvoLoading(true);
-            setConvoLog([]); setConvoTurn(0); setConvoReview(null); setConvoPhase("convo");
+            // Reset all refs and state
+            convoLogRef.current = [];
+            convoTurnRef.current = 0;
+            convoScriptRef.current = null;
+            convoResultPending.current = false;
+            setConvoLog([]); setConvoTurn(0); setConvoReview(null);
+            setConvoPhase("convo"); setConvoLiveText("");
             try {
               const script = await generateConvoScript(convoTopic, convoLevel, allWords, apiKey);
+              convoScriptRef.current = script;
               setConvoScript(script);
-              // Start with first AI turn
-              setTimeout(() => advanceAI(0, script), 400);
+              setTimeout(() => advanceAI(0), 500);
             } catch(e) {
               setConvoPhase("setup");
               alert("Lỗi tạo hội thoại: " + e.message);
@@ -2504,14 +2571,16 @@ function VocabApp({ apiKey }) {
                     💡 <b style={{color:"#c4b5fd"}}>Gợi ý:</b> {currentTurn?.prompt}
                   </div>
                   <div style={{textAlign:"center"}}>
-                    <button className={`mic-btn btn ${convoListening?"listening":"idle"}`} onClick={()=>{
-                      if(convoListening){convoRecRef.current?.stop();}
-                      else listenUser();
-                    }}>
+                    <button className={`mic-btn btn ${convoListening?"listening":"idle"}`} onClick={listenUser}>
                       {convoListening ? "⏹" : "🎤"}
                     </button>
+                    {convoListening && convoLiveText && (
+                      <div style={{marginTop:".6rem",padding:".5rem .8rem",background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.2)",borderRadius:10,fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#c4b5fd",fontStyle:"italic",minHeight:36}}>
+                        "{convoLiveText}"
+                      </div>
+                    )}
                     <div style={{fontSize:".75rem",color:convoListening?"#f87171":"#5a4a6a",marginTop:".5rem",fontFamily:"'Crimson Pro',serif"}}>
-                      {convoListening ? "🔴 Đang ghi âm — nói đi rồi nhấn ⏹" : "Nhấn 🎤 và nói câu trả lời của bạn"}
+                      {convoListening ? "🔴 Đang ghi âm — nói xong nhấn ⏹ để dừng" : "Nhấn 🎤 và nói câu trả lời của bạn"}
                     </div>
                   </div>
                 </div>
@@ -2542,7 +2611,7 @@ function VocabApp({ apiKey }) {
                     setConvoLog(prev=>[...prev,logEntry]);
                     const nextIdx=convoTurn+1;
                     setConvoTurn(nextIdx);
-                    if(nextIdx<convoScript.turns.length) setTimeout(()=>advanceAI(nextIdx,convoScript),300);
+                    if(nextIdx<convoScript.turns.length) setTimeout(()=>advanceAI(nextIdx),300);
                   }} style={{padding:".42rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
                     ⏭ Bỏ qua lượt này
                   </button>
@@ -2550,7 +2619,7 @@ function VocabApp({ apiKey }) {
                 <button className="btn" onClick={()=>{
                   convoRecRef.current?.stop();
                   window.speechSynthesis?.cancel();
-                  setConvoPhase("setup"); setConvoScript(null); setConvoLog([]); setConvoTurn(0);
+                  setConvoPhase("setup"); setConvoScript(null); setConvoLog([]); setConvoTurn(0); setConvoLiveText(""); convoLogRef.current=[]; convoTurnRef.current=0; convoScriptRef.current=null;
                 }} style={{padding:".42rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
                   ✕ Thoát
                 </button>
