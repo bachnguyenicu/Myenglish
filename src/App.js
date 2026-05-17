@@ -2290,36 +2290,42 @@ function VocabApp({ apiKey }) {
             rec.interimResults = true;   // show interim so user sees feedback
             rec.maxAlternatives = 1;
 
-            let finalTranscript = "";
-            let interimDisplay  = "";
+            // Accumulate ALL recognized speech — never reset between onresult calls
+            let accumulatedFinal = "";
+            let currentInterim   = "";
 
-            rec.onstart = () => { setConvoListening(true); finalTranscript = ""; };
-            rec.onend   = () => {
+            rec.onstart = () => {
+              setConvoListening(true);
+              accumulatedFinal = "";
+              currentInterim   = "";
+              setConvoLiveText("");
+            };
+
+            rec.onend = () => {
               setConvoListening(false);
-              // Only process if user actually said something and hasn't been processed yet
-              if (!finalTranscript.trim() || convoResultPending.current) return;
+              const fullText = (accumulatedFinal + " " + currentInterim).trim();
+              if (!fullText || convoResultPending.current) return;
               convoResultPending.current = true;
 
-              const turnIdx  = convoTurnRef.current;
-              const script   = convoScriptRef.current;
+              const turnIdx = convoTurnRef.current;
+              const script  = convoScriptRef.current;
               if (!script || turnIdx >= script.turns.length) return;
               const turn = script.turns[turnIdx];
               if (!turn || turn.role !== "user") return;
 
               const ideal    = turn.ideal || "";
-              const best     = finalTranscript.trim();
-              const score    = wordScore(best, ideal);
-              const diff     = charDiff(best, ideal);
-              const logEntry = {role:"user", text:turn.prompt, userSaid:best, ideal, score, diff};
+              const score    = wordScore(fullText, ideal);
+              const diff     = charDiff(fullText, ideal);
+              const logEntry = {role:"user", text:turn.prompt, userSaid:fullText, ideal, score, diff};
 
               convoLogRef.current = [...convoLogRef.current, logEntry];
               setConvoLog([...convoLogRef.current]);
+              setConvoLiveText("");
 
               const nextIdx = turnIdx + 1;
               convoTurnRef.current = nextIdx;
               setConvoTurn(nextIdx);
 
-              // Advance to next AI turn after short pause
               if (nextIdx < script.turns.length && script.turns[nextIdx]?.role === "ai") {
                 setTimeout(() => advanceAI(nextIdx), 700);
               }
@@ -2331,14 +2337,17 @@ function VocabApp({ apiKey }) {
             };
 
             rec.onresult = (e) => {
-              finalTranscript = "";
-              interimDisplay  = "";
-              for (let i = e.resultIndex; i < e.results.length; i++) {
-                if (e.results[i].isFinal) finalTranscript += e.results[i][0].transcript + " ";
-                else interimDisplay += e.results[i][0].transcript;
+              // Key fix: iterate from 0 to accumulate ALL results, not just new ones
+              accumulatedFinal = "";
+              currentInterim   = "";
+              for (let i = 0; i < e.results.length; i++) {
+                if (e.results[i].isFinal) {
+                  accumulatedFinal += e.results[i][0].transcript + " ";
+                } else {
+                  currentInterim += e.results[i][0].transcript;
+                }
               }
-              // Update a live preview — stored in a temporary state
-              setConvoLiveText((finalTranscript + interimDisplay).trim());
+              setConvoLiveText((accumulatedFinal + currentInterim).trim());
             };
 
             rec.start();
