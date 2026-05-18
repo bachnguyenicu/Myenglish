@@ -135,7 +135,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { DAILY:"daily", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
+const MODES = { DAILY:"daily", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 function getBestVoice(voices) {
@@ -578,6 +578,102 @@ Generate a mini challenge with 3 tasks. Reply ONLY with raw JSON:
   return JSON.parse(m[0]);
 }
 
+
+// ─── Claude API — Reading Comprehension ──────────────────────────────────
+async function generateReading(words, level, apiKey) {
+  const picks = words.slice(0, 5).map(w => `"${w.word}" (${w.meaning})`).join(", ");
+  const prompt = `Write a short English reading passage for a Vietnamese learner at ${level} level.
+Include these vocabulary words naturally: ${picks}
+
+Reply ONLY with raw JSON:
+{
+  "title": "<title in Vietnamese>",
+  "passage": "<120-160 word passage in English using the vocabulary>",
+  "questions": [
+    {"q": "<comprehension question>", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], "answer": "A"},
+    {"q": "<question>", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], "answer": "B"},
+    {"q": "<question>", "options": ["A. ...", "B. ...", "C. ...", "D. ..."], "answer": "C"}
+  ],
+  "vocabulary": ["word1","word2","word3"]
+}`;
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:900,system:"Output ONLY raw JSON. No markdown.",messages:[{role:"user",content:prompt}]})
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message||`HTTP ${res.status}`);
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  const m = raw.match(/\{[\s\S]*\}/); if (!m) throw new Error("JSON không hợp lệ");
+  const p = JSON.parse(m[0]);
+  if (!p.passage||!p.questions) throw new Error("Thiếu dữ liệu");
+  return p;
+}
+
+// ─── Claude API — Mini Podcast ────────────────────────────────────────────
+async function generatePodcast(words, level, apiKey) {
+  const picks = words.slice(0, 4).map(w => w.word).join(", ");
+  const prompt = `Create a mini podcast dialogue between two speakers (A and B) for a Vietnamese learner at ${level} level.
+Include these words naturally: ${picks}
+Length: 8-10 exchanges total. Natural, interesting topic.
+
+Reply ONLY with raw JSON:
+{
+  "title": "<episode title in Vietnamese>",
+  "topic": "<1-line topic description in Vietnamese>",
+  "script": [
+    {"speaker":"A","line":"..."},
+    {"speaker":"B","line":"..."}
+  ],
+  "questions": [
+    {"q": "<listening comprehension question in Vietnamese>", "options":["A. ...","B. ...","C. ..."], "answer":"A"},
+    {"q": "<question>", "options":["A. ...","B. ...","C. ..."], "answer":"B"},
+    {"q": "<question>", "options":["A. ...","B. ...","C. ..."], "answer":"C"}
+  ],
+  "keyWords": ["word1","word2"]
+}`;
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:1000,system:"Output ONLY raw JSON. No markdown.",messages:[{role:"user",content:prompt}]})
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message||`HTTP ${res.status}`);
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  const m = raw.match(/\{[\s\S]*\}/); if (!m) throw new Error("JSON không hợp lệ");
+  return JSON.parse(m[0]);
+}
+
+// ─── Claude API — Journal Feedback ───────────────────────────────────────
+async function checkJournal(entry, prompt, apiKey) {
+  const p = `Review this English journal entry from a Vietnamese learner.
+Prompt they answered: "${prompt}"
+Their entry: "${entry}"
+
+Reply ONLY with raw JSON (no unescaped double-quotes inside strings):
+{"score":7,"corrected":"corrected version of their entry","grammarErrors":[{"error":"bad","fix":"good","rule":"quy tac"}],"styleNote":"loi khuyen van phong tieng Viet","encouragement":"loi dong vien tieng Viet"}`;
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:600,system:"Output ONLY compact single-line JSON. No unescaped double-quotes inside string values.",messages:[{role:"user",content:p}]})
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message||`HTTP ${res.status}`);
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
+}
+
+// ─── Journal prompt pool ──────────────────────────────────────────────────
+const JOURNAL_PROMPTS = [
+  "Hôm nay bạn học được điều gì thú vị?",
+  "Mô tả 1 thói quen tốt bạn đang duy trì.",
+  "Điều gì khiến bạn cảm thấy tự hào tuần này?",
+  "Bạn muốn cải thiện điều gì trong tháng tới?",
+  "Mô tả người bạn ngưỡng mộ nhất và lý do.",
+  "Nếu có 1 ngày tự do hoàn toàn, bạn sẽ làm gì?",
+  "Kể về 1 thử thách bạn đã vượt qua gần đây.",
+  "Điều gì giúp bạn giữ động lực học tiếng Anh?",
+  "Mô tả nơi bạn muốn đến nhất trên thế giới.",
+  "Bạn nghĩ AI sẽ thay đổi cuộc sống như thế nào?",
+];
+
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
   const [allWords, setAllWords] = useState(() => loadState("lx_words", BUILT_IN));
@@ -636,6 +732,34 @@ function VocabApp({ apiKey }) {
   const [dailySpeakResult, setDailySpeakResult] = useState(null);
   const [dailySpeakListening, setDailySpeakListening] = useState(false);
   const dailySpeakRecRef = useRef(null);
+  // Shadow Reading
+  const [shadowSentences, setShadowSentences] = useState([]);
+  const [shadowIdx, setShadowIdx]     = useState(0);
+  const [shadowListening, setShadowListening] = useState(false);
+  const [shadowResult, setShadowResult]   = useState(null);
+  const [shadowScore, setShadowScore]   = useState({ total:0, count:0 });
+  const [shadowDone, setShadowDone]     = useState(false);
+  const shadowRecRef = useRef(null);
+  // Reading comprehension
+  const [readingPassage, setReadingPassage] = useState(null);
+  const [readingAnswers, setReadingAnswers] = useState([]);
+  const [readingChecked, setReadingChecked] = useState(false);
+  const [readingLoading, setReadingLoading] = useState(false);
+  const [readingErr, setReadingErr]     = useState("");
+  // Podcast
+  const [podcastEp, setPodcastEp]       = useState(null);
+  const [podcastPlaying, setPodcastPlaying] = useState(false);
+  const [podcastQAnswers, setPodcastQAnswers] = useState([]);
+  const [podcastChecked, setPodcastChecked] = useState(false);
+  const [podcastLoading, setPodcastLoading] = useState(false);
+  const [podcastShowScript, setPodcastShowScript] = useState(false);
+  // Journal
+  const [journalEntries, setJournalEntries] = useState(() => loadState("lx_journal", []));
+  const [journalInput, setJournalInput]   = useState("");
+  const [journalPrompt, setJournalPrompt] = useState("");
+  const [journalResult, setJournalResult] = useState(null);
+  const [journalLoading, setJournalLoading] = useState(false);
+  const [journalView, setJournalView]     = useState("write"); // write | history
   // Listen & Dictation shared
   const [listenQueue, setListenQueue] = useState([]);
   const [listenIdx, setListenIdx] = useState(0);
@@ -722,6 +846,7 @@ function VocabApp({ apiKey }) {
   useEffect(() => { try { localStorage.setItem("lx_learning", JSON.stringify(learningArr)); } catch {} }, [learningArr]);
   useEffect(() => { try { localStorage.setItem("lx_grammar_lessons", JSON.stringify(savedLessons)); } catch {} }, [savedLessons]);
   useEffect(() => { try { localStorage.setItem("lx_daily", JSON.stringify(dailyProgress)); } catch {} }, [dailyProgress]);
+  useEffect(() => { try { localStorage.setItem("lx_journal", JSON.stringify(journalEntries)); } catch {} }, [journalEntries]);
 
   // Trigger cloud sync whenever any data changes
   useEffect(() => {
@@ -947,6 +1072,13 @@ function VocabApp({ apiKey }) {
     .daily-step.done{background:rgba(74,222,128,.1);border:1px solid rgba(74,222,128,.2);color:#4ade80;}
     .daily-step.active{background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.28);color:#c4b5fd;font-weight:700;}
     .daily-step.pending{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);color:#4a3a5a;}
+    .reading-opt{border-radius:10px;padding:.6rem .9rem;margin-bottom:.45rem;width:100%;text-align:left;font-size:.95rem;font-family:'Crimson Pro',serif;cursor:pointer;border:1.5px solid rgba(255,255,255,.1);background:rgba(255,255,255,.04);color:#e8e0f0;transition:all .18s;}
+    .reading-opt:hover:not(:disabled){background:rgba(167,139,250,.15);border-color:#a78bfa;}
+    .reading-opt.ok{background:rgba(74,222,128,.15);border-color:#4ade80!important;color:#4ade80;}
+    .reading-opt.no{background:rgba(248,113,113,.15);border-color:#f87171!important;color:#f87171;}
+    .journal-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .shadow-bar{height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:.3rem;}
+    .shadow-bar-fill{height:100%;border-radius:3px;transition:width .5s;}
     .streak-badge{display:inline-flex;align-items:center;gap:.3rem;background:linear-gradient(135deg,rgba(251,191,36,.2),rgba(248,113,113,.15));border:1px solid rgba(251,191,36,.3);border-radius:999px;padding:.3rem .9rem;font-size:.85rem;font-weight:700;color:#fbbf24;}
     @keyframes recpulse{0%,100%{opacity:1}50%{opacity:.4}}
     .writing-area{width:100%;background:rgba(255,255,255,.05);border:2px solid rgba(255,255,255,.1);border-radius:14px;padding:.9rem 1rem;color:#e8e0f0;font-family:'Crimson Pro',serif;font-size:1.05rem;outline:none;transition:all .25s;line-height:1.7;resize:none;min-height:110px;}
@@ -978,6 +1110,10 @@ function VocabApp({ apiKey }) {
     [MODES.WRITING]:"✏️ Writing",
     [MODES.SPEAKING]:"🎤 Speaking",
     [MODES.CONVO]:"💬 Hội thoại",
+    [MODES.SHADOW]:"🪞 Shadow",
+    [MODES.READING]:"📖 Đọc hiểu",
+    [MODES.PODCAST]:"🎙 Podcast",
+    [MODES.JOURNAL]:"📔 Nhật ký",
     [MODES.GRAMMAR]: savedLessons.length > 0 ? `📒 Grammar (${savedLessons.length})` : "📒 Grammar",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
@@ -3080,6 +3216,553 @@ function VocabApp({ apiKey }) {
             </div>
           );
         })()}
+
+
+        {/* ══ SHADOW READING ══ */}
+        {mode===MODES.SHADOW && (() => {
+          const pool = filtered.length>=1 ? filtered : allWords;
+          const cur  = shadowSentences[shadowIdx];
+          const normalize = s => s.toLowerCase().trim().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
+          const wordScore = (spoken,target) => {
+            const s=normalize(spoken).split(" "),t=normalize(target).split(" ");
+            if(!t.length) return 0;
+            let m=0; t.forEach((tw,i)=>{const sw=s[i]||"";if(sw===tw){m+=1;}else{let c=0;for(let j=0;j<Math.min(sw.length,tw.length);j++)if(sw[j]===tw[j])c++;m+=(c/Math.max(sw.length,tw.length,1))*.6;}});
+            return Math.round((m/t.length)*100);
+          };
+          const scoreColor = s=>s>=85?"#4ade80":s>=65?"#fbbf24":"#f87171";
+
+          const buildShadow = () => {
+            const picked = shuffle(pool).slice(0, Math.min(8, pool.length));
+            const sentences = picked.map(w=>({word:w.word,meaning:w.meaning,sentence:w.example,phonetic:w.phonetic}));
+            setShadowSentences(sentences); setShadowIdx(0); setShadowResult(null);
+            setShadowScore({total:0,count:0}); setShadowDone(false);
+          };
+
+          const playAndListen = (rate) => {
+            if (!cur) return;
+            speak(cur.sentence, rate||0.75);
+            const est = Math.max(2000, cur.sentence.length*78);
+            setTimeout(() => {
+              const SR = window.SpeechRecognition||window.webkitSpeechRecognition;
+              if (!SR) return;
+              const rec = new SR();
+              shadowRecRef.current = rec;
+              rec.lang="en-US"; rec.continuous=false; rec.interimResults=false; rec.maxAlternatives=3;
+              rec.onstart = ()=>setShadowListening(true);
+              rec.onend   = ()=>setShadowListening(false);
+              rec.onresult = (e)=>{
+                let best="",bestScore=-1;
+                for(let i=0;i<e.results[0].length;i++){const t=e.results[0][i].transcript;const s=wordScore(t,cur.sentence);if(s>bestScore){bestScore=s;best=t;}}
+                setShadowResult({transcript:best,score:bestScore});
+                setShadowScore(prev=>({total:prev.total+bestScore,count:prev.count+1}));
+              };
+              rec.start();
+            }, est);
+          };
+
+          const nextShadow = () => {
+            if(shadowIdx+1>=shadowSentences.length){setShadowDone(true);return;}
+            setShadowIdx(i=>i+1); setShadowResult(null); setShadowListening(false);
+          };
+
+          if(shadowSentences.length===0) return (
+            <div style={{textAlign:"center",padding:"2rem 1rem"}}>
+              <div style={{fontSize:"3rem",marginBottom:".7rem"}}>🪞</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.3rem",fontWeight:700,color:"#f0eaff",marginBottom:".5rem"}}>Shadow Reading</div>
+              <div style={{fontSize:".88rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",lineHeight:1.75,maxWidth:380,margin:"0 auto 1.2rem"}}>
+                Kỹ thuật <b style={{color:"#a78bfa"}}>shadowing</b> — nghe câu mẫu, đọc theo ngay lập tức. Cải thiện phát âm, nhịp điệu và tốc độ nói rất hiệu quả.
+              </div>
+              <div style={{display:"flex",gap:".6rem",justifyContent:"center",marginBottom:"1.2rem",flexWrap:"wrap"}}>
+                {["🎯 Bắt sát giọng mẫu","⚡ Tăng tốc độ nói","🎵 Cải thiện ngữ điệu"].map(t=>(
+                  <span key={t} style={{fontSize:".75rem",color:"#c4b5fd",background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.2)",borderRadius:999,padding:".25rem .75rem"}}>{t}</span>
+                ))}
+              </div>
+              <button className="btn" onClick={buildShadow}
+                style={{padding:".9rem 2.5rem",borderRadius:14,background:"linear-gradient(135deg,#a78bfa,#818cf8)",color:"white",fontSize:"1rem",border:"none",fontWeight:700}}>
+                🎙 Bắt đầu
+              </button>
+            </div>
+          );
+
+          if(shadowDone) return (
+            <div style={{textAlign:"center",padding:"2.5rem 1rem"}}>
+              <div style={{fontSize:"3.5rem",marginBottom:".7rem"}}>🎉</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2.2rem",fontWeight:900,background:"linear-gradient(90deg,#a78bfa,#818cf8)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>
+                {shadowScore.count>0?Math.round(shadowScore.total/shadowScore.count):0} / 100
+              </div>
+              <div style={{color:"#8a7a9a",marginTop:".4rem",fontFamily:"'Crimson Pro',serif",fontSize:"1rem"}}>Điểm trung bình {shadowScore.count} câu</div>
+              <button className="btn" onClick={buildShadow} style={{marginTop:"1.4rem",padding:".75rem 2rem",borderRadius:12,background:"linear-gradient(135deg,#a78bfa,#818cf8)",color:"white",fontSize:".98rem",border:"none"}}>🔄 Luyện lại</button>
+            </div>
+          );
+
+          return (
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:".75rem",color:"#5a4a6a",marginBottom:".7rem"}}>
+                <span>Câu {shadowIdx+1} / {shadowSentences.length}</span>
+                {shadowScore.count>0 && <span style={{color:"#a78bfa"}}>TB: {Math.round(shadowScore.total/shadowScore.count)}/100</span>}
+              </div>
+              <div style={{background:"linear-gradient(145deg,#1c1035,#251545)",border:"1px solid rgba(167,139,250,.2)",borderRadius:22,padding:"1.5rem",marginBottom:"1rem",textAlign:"center"}}>
+                <div style={{marginBottom:".8rem"}}>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.8rem",fontWeight:900,color:"#f5f0ff"}}>{cur.word}</div>
+                  <div style={{color:"#a78bfa",fontSize:".85rem",fontStyle:"italic",fontFamily:"'Crimson Pro',serif",opacity:.8}}>{cur.phonetic} — {cur.meaning}</div>
+                </div>
+                <div style={{background:"rgba(167,139,250,.08)",borderRadius:12,padding:".8rem 1rem",fontSize:"1rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0",lineHeight:1.6,marginBottom:"1.2rem",fontStyle:"italic"}}>
+                  "{cur.sentence}"
+                </div>
+                <div style={{fontSize:".68rem",color:"#5a4a6a",marginBottom:".6rem",letterSpacing:".1em"}}>1. NGHE MẪU → 2. ĐỌC NGAY THEO</div>
+                <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginBottom:".8rem"}}>
+                  {[[0.6,"🐢 Chậm"],[0.78,"▶ Chuẩn"],[1.0,"🐇 Nhanh"]].map(([r,l])=>(
+                    <button key={r} className="btn" onClick={()=>playAndListen(r)}
+                      style={{padding:".38rem .85rem",borderRadius:999,background:"rgba(167,139,250,.14)",border:"1px solid rgba(167,139,250,.28)",color:"#c4b5fd",fontSize:".78rem"}}>
+                      {l}
+                    </button>
+                  ))}
+                </div>
+                {shadowListening && (
+                  <div style={{color:"#f87171",fontSize:".8rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}} className="pulse-rec">
+                    🎤 Đang ghi âm giọng bạn...
+                  </div>
+                )}
+              </div>
+
+              {shadowResult && (
+                <div className="fade-in" style={{background:"rgba(0,0,0,.25)",border:`1.5px solid ${scoreColor(shadowResult.score)}44`,borderRadius:14,padding:".9rem 1rem",marginBottom:".9rem"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:".8rem"}}>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.8rem",fontWeight:900,color:scoreColor(shadowResult.score),lineHeight:1,minWidth:50,textAlign:"center"}}>
+                      {shadowResult.score}<span style={{fontSize:".6rem",color:"#5a4a6a"}}>/100</span>
+                    </div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:".8rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".3rem"}}>
+                        Bạn: "{shadowResult.transcript}"
+                      </div>
+                      <div className="shadow-bar">
+                        <div className="shadow-bar-fill" style={{width:`${shadowResult.score}%`,background:scoreColor(shadowResult.score)}}/>
+                      </div>
+                    </div>
+                    <button className="spkbtn btn" onClick={()=>speak(cur.sentence,0.75)}>🔊</button>
+                  </div>
+                </div>
+              )}
+
+              <div style={{display:"flex",gap:".7rem"}}>
+                <button className="btn" onClick={()=>{setShadowResult(null);playAndListen(0.78);}}
+                  style={{flex:1,padding:".82rem",borderRadius:14,background:"rgba(167,139,250,.1)",border:"1.5px solid rgba(167,139,250,.22)",color:"#c4b5fd",fontWeight:700,fontSize:".95rem"}}>
+                  🔄 Thử lại
+                </button>
+                {shadowResult && (
+                  <button className="btn" onClick={nextShadow}
+                    style={{flex:1,padding:".82rem",borderRadius:14,background:"linear-gradient(135deg,#a78bfa,#818cf8)",color:"white",border:"none",fontWeight:700,fontSize:".95rem"}}>
+                    {shadowIdx+1>=shadowSentences.length?"🏁 Kết quả":"Tiếp →"}
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ══ READING COMPREHENSION ══ */}
+        {mode===MODES.READING && (
+          <div>
+            {!readingPassage ? (
+              <div>
+                <div style={{background:"linear-gradient(145deg,rgba(74,222,128,.07),rgba(96,165,250,.05))",border:"1px solid rgba(74,222,128,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1.2rem"}}>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#86efac",marginBottom:".3rem"}}>📖 Đọc hiểu</div>
+                  <div style={{fontSize:".83rem",color:"#7a8a7a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+                    AI tạo đoạn văn chứa từ vựng bạn đang học → đọc hiểu → trả lời 3 câu hỏi trắc nghiệm.
+                  </div>
+                </div>
+                {readingErr && <div style={{color:"#fca5a5",fontSize:".82rem",padding:".6rem .9rem",background:"rgba(248,113,113,.1)",borderRadius:10,marginBottom:".8rem"}}>⚠ {readingErr}</div>}
+                {readingLoading ? (
+                  <div>{[85,60,75,90,55].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:9,width:`${w}%`}}/>)}</div>
+                ) : (
+                  <button className="btn" onClick={async()=>{
+                    setReadingLoading(true); setReadingErr(""); setReadingPassage(null);
+                    setReadingAnswers([]); setReadingChecked(false);
+                    try {
+                      const pool = allWords.length>=5?allWords:allWords;
+                      const picked = shuffle(pool).slice(0,5);
+                      const p = await generateReading(picked, levelFilter==="All"?"B1":levelFilter, apiKey);
+                      setReadingPassage(p); setReadingAnswers(Array(p.questions.length).fill(""));
+                    } catch(e){setReadingErr("Lỗi: "+e.message);}
+                    finally{setReadingLoading(false);}
+                  }} style={{width:"100%",padding:".9rem",borderRadius:14,background:"linear-gradient(135deg,#4ade80,#22c55e)",color:"#0a1a0e",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                    📖 Tạo bài đọc mới
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="fade-in">
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".7rem"}}>
+                  <div style={{fontSize:".75rem",color:"#4ade80",background:"rgba(74,222,128,.1)",border:"1px solid rgba(74,222,128,.2)",borderRadius:999,padding:".2rem .8rem"}}>
+                    📖 {readingPassage.title}
+                  </div>
+                  <button className="btn" onClick={()=>{setReadingPassage(null);setReadingChecked(false);}}
+                    style={{padding:".25rem .7rem",borderRadius:8,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".75rem"}}>
+                    ✕ Bài mới
+                  </button>
+                </div>
+
+                {/* Passage */}
+                <div style={{background:"rgba(255,255,255,.025)",border:"1px solid rgba(74,222,128,.12)",borderRadius:16,padding:"1.1rem 1.2rem",marginBottom:"1rem",fontSize:"1rem",fontFamily:"'Crimson Pro',serif",lineHeight:1.85,color:"#d4c8f0"}}>
+                  {readingPassage.passage.split(new RegExp(`(${(readingPassage.vocabulary||[]).join("|")})`, "gi")).map((part,i)=>{
+                    const isVocab = (readingPassage.vocabulary||[]).some(v=>v.toLowerCase()===part.toLowerCase());
+                    return isVocab
+                      ? <b key={i} style={{color:"#fbbf24",borderBottom:"1px dotted #fbbf24"}}>{part}</b>
+                      : <span key={i}>{part}</span>;
+                  })}
+                </div>
+
+                {/* Questions */}
+                <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".6rem"}}>Câu hỏi đọc hiểu</div>
+                {readingPassage.questions.map((q,qi)=>(
+                  <div key={qi} style={{background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.06)",borderRadius:14,padding:"1rem",marginBottom:".8rem",opacity:readingChecked?.85:1}}>
+                    <div style={{fontSize:".9rem",fontFamily:"'Crimson Pro',serif",fontWeight:600,color:"#f0eaff",marginBottom:".6rem"}}>
+                      {qi+1}. {q.q}
+                    </div>
+                    {q.options.map((opt,oi)=>{
+                      const letter = opt[0];
+                      const isSelected = readingAnswers[qi]===letter;
+                      const isCorrect = readingChecked && letter===q.answer;
+                      const isWrong   = readingChecked && isSelected && letter!==q.answer;
+                      let cls="reading-opt";
+                      if(isCorrect) cls+=" ok";
+                      else if(isWrong) cls+=" no";
+                      return (
+                        <button key={oi} className={cls} disabled={readingChecked}
+                          onClick={()=>setReadingAnswers(prev=>{const a=[...prev];a[qi]=letter;return a;})}
+                          style={{background:isSelected&&!readingChecked?"rgba(167,139,250,.15)":"",borderColor:isSelected&&!readingChecked?"#a78bfa":""}}>
+                          {opt}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+
+                {!readingChecked ? (
+                  <button className="btn" onClick={()=>setReadingChecked(true)}
+                    disabled={readingAnswers.some(a=>!a)}
+                    style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#4ade80,#22c55e)",color:"#0a1a0e",border:"none",fontWeight:700,fontSize:"1rem",opacity:readingAnswers.some(a=>!a)?0.5:1}}>
+                    ✅ Kiểm tra đáp án
+                  </button>
+                ) : (
+                  <div className="fade-in">
+                    <div style={{textAlign:"center",padding:".8rem",borderRadius:14,marginBottom:".9rem",
+                      background:readingAnswers.filter((a,i)=>a===readingPassage.questions[i].answer).length===readingPassage.questions.length?"rgba(74,222,128,.1)":"rgba(167,139,250,.08)",
+                      border:"1px solid rgba(167,139,250,.15)"}}>
+                      {(()=>{const c=readingAnswers.filter((a,i)=>a===readingPassage.questions[i].answer).length;
+                        return <><div style={{fontSize:"2rem"}}>{c===3?"🎉":c===2?"👍":"📚"}</div>
+                          <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.3rem",fontWeight:700,color:c===3?"#4ade80":"#c4b5fd"}}>{c} / {readingPassage.questions.length} đúng</div></>;
+                      })()}
+                    </div>
+                    <button className="btn" onClick={()=>{setReadingPassage(null);setReadingChecked(false);}}
+                      style={{width:"100%",padding:".85rem",borderRadius:14,background:"linear-gradient(135deg,#4ade80,#22c55e)",color:"#0a1a0e",border:"none",fontWeight:700,fontSize:".98rem"}}>
+                      📖 Bài đọc mới
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ PODCAST ══ */}
+        {mode===MODES.PODCAST && (
+          <div>
+            {!podcastEp ? (
+              <div>
+                <div style={{background:"linear-gradient(145deg,rgba(251,191,36,.07),rgba(96,165,250,.05))",border:"1px solid rgba(251,191,36,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1.2rem"}}>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#fde68a",marginBottom:".3rem"}}>🎙 Mini Podcast</div>
+                  <div style={{fontSize:".83rem",color:"#9a8a6a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+                    AI tạo đoạn hội thoại 2 người ~10 lượt, đọc bằng TTS. Nghe xong trả lời câu hỏi hiểu ý. Xem script khi cần.
+                  </div>
+                </div>
+                {podcastLoading ? (
+                  <div>{[80,55,70,40,65].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:9,width:`${w}%`}}/>)}</div>
+                ) : (
+                  <button className="btn" onClick={async()=>{
+                    setPodcastLoading(true); setPodcastEp(null); setPodcastChecked(false);
+                    setPodcastQAnswers([]); setPodcastShowScript(false);
+                    try {
+                      const pool = shuffle(allWords).slice(0,4);
+                      const ep = await generatePodcast(pool, levelFilter==="All"?"B1":levelFilter, apiKey);
+                      setPodcastEp(ep); setPodcastQAnswers(Array(ep.questions.length).fill(""));
+                    } catch(e){alert("Lỗi: "+e.message);}
+                    finally{setPodcastLoading(false);}
+                  }} style={{width:"100%",padding:".9rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                    🎙 Tạo tập podcast mới
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="fade-in">
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".7rem",flexWrap:"wrap",gap:".4rem"}}>
+                  <div>
+                    <div style={{fontSize:".75rem",color:"#fbbf24",background:"rgba(251,191,36,.1)",border:"1px solid rgba(251,191,36,.2)",borderRadius:999,padding:".2rem .8rem",display:"inline-block"}}>
+                      🎙 {podcastEp.title}
+                    </div>
+                    <div style={{fontSize:".72rem",color:"#5a4a6a",marginTop:".2rem",fontFamily:"'Crimson Pro',serif"}}>{podcastEp.topic}</div>
+                  </div>
+                  <button className="btn" onClick={()=>{window.speechSynthesis?.cancel();setPodcastEp(null);}}
+                    style={{padding:".25rem .7rem",borderRadius:8,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".75rem"}}>
+                    ✕ Tập mới
+                  </button>
+                </div>
+
+                {/* Play full podcast */}
+                <div style={{background:"rgba(0,0,0,.25)",border:"1px solid rgba(251,191,36,.18)",borderRadius:16,padding:"1.1rem",marginBottom:"1rem",textAlign:"center"}}>
+                  <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".1em",marginBottom:".8rem"}}>NGHE TOÀN BỘ PODCAST</div>
+                  <button className={`mic-btn btn ${podcastPlaying?"speak-pulse":"idle"}`}
+                    onClick={()=>{
+                      if(podcastPlaying){window.speechSynthesis?.cancel();setPodcastPlaying(false);return;}
+                      setPodcastPlaying(true);
+                      let idx=0;
+                      const playNext=()=>{
+                        if(idx>=podcastEp.script.length){setPodcastPlaying(false);return;}
+                        const line=podcastEp.script[idx];
+                        const rate = line.speaker==="A"?0.85:0.78;
+                        const u=new SpeechSynthesisUtterance(line.line);
+                        u.lang="en-US"; u.rate=rate;
+                        u.onend=()=>{idx++;setTimeout(playNext,400);};
+                        window.speechSynthesis.speak(u);
+                        idx++;
+                      };
+                      // Play in sequence
+                      let i=0;
+                      const seq=()=>{
+                        if(i>=podcastEp.script.length){setPodcastPlaying(false);return;}
+                        const s=podcastEp.script[i];
+                        const u=new SpeechSynthesisUtterance(s.line);
+                        u.lang="en-US"; u.rate=s.speaker==="A"?0.85:0.78;
+                        u.pitch=s.speaker==="A"?1.05:0.92;
+                        u.onend=()=>{i++;setTimeout(seq,350);};
+                        window.speechSynthesis.speak(u); i++;
+                      };
+                      window.speechSynthesis.cancel(); seq();
+                    }}
+                    style={{width:72,height:72}}>
+                    {podcastPlaying?"⏹":"▶️"}
+                  </button>
+                  <div style={{fontSize:".75rem",color:"#5a4a6a",marginTop:".5rem",fontFamily:"'Crimson Pro',serif"}}>
+                    {podcastPlaying?"Đang phát... (nhấn ⏹ để dừng)":"Nhấn ▶️ nghe podcast"}
+                  </div>
+                  {(podcastEp.keyWords||[]).length>0 && (
+                    <div style={{marginTop:".7rem",display:"flex",gap:".35rem",justifyContent:"center",flexWrap:"wrap"}}>
+                      {podcastEp.keyWords.map((w,i)=><span key={i} style={{fontSize:".7rem",color:"#fbbf24",background:"rgba(251,191,36,.1)",borderRadius:999,padding:".15rem .6rem"}}>{w}</span>)}
+                    </div>
+                  )}
+                </div>
+
+                {/* Toggle script */}
+                <button className="btn" onClick={()=>setPodcastShowScript(s=>!s)}
+                  style={{width:"100%",marginBottom:".9rem",padding:".55rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#6a5a7a",fontSize:".82rem"}}>
+                  {podcastShowScript?"🙈 Ẩn script":"👁 Xem script"}
+                </button>
+
+                {podcastShowScript && (
+                  <div style={{background:"rgba(0,0,0,.25)",border:"1px solid rgba(255,255,255,.07)",borderRadius:14,padding:"1rem",marginBottom:"1rem",maxHeight:220,overflowY:"auto"}}>
+                    {podcastEp.script.map((line,i)=>(
+                      <div key={i} style={{marginBottom:".5rem",display:"flex",gap:".7rem",alignItems:"flex-start"}}>
+                        <span style={{fontSize:".75rem",fontWeight:700,color:line.speaker==="A"?"#60a5fa":"#f472b6",minWidth:14}}>{line.speaker}</span>
+                        <span style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#c4b5fd",flex:1,lineHeight:1.5}}>{line.line}</span>
+                        <button className="spkbtn btn" style={{fontSize:".62rem",padding:".1rem .4rem"}} onClick={()=>speak(line.line,line.speaker==="A"?0.85:0.78)}>🔊</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Questions */}
+                <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".6rem"}}>Câu hỏi nghe hiểu</div>
+                {podcastEp.questions.map((q,qi)=>(
+                  <div key={qi} style={{background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.06)",borderRadius:14,padding:"1rem",marginBottom:".8rem",opacity:podcastChecked?.85:1}}>
+                    <div style={{fontSize:".9rem",fontFamily:"'Crimson Pro',serif",fontWeight:600,color:"#f0eaff",marginBottom:".6rem"}}>{qi+1}. {q.q}</div>
+                    {q.options.map((opt,oi)=>{
+                      const letter=opt[0];
+                      const isSel=podcastQAnswers[qi]===letter;
+                      const isOk=podcastChecked&&letter===q.answer;
+                      const isNo=podcastChecked&&isSel&&!isOk;
+                      let cls="reading-opt";
+                      if(isOk)cls+=" ok"; else if(isNo)cls+=" no";
+                      return (
+                        <button key={oi} className={cls} disabled={podcastChecked}
+                          onClick={()=>setPodcastQAnswers(p=>{const a=[...p];a[qi]=letter;return a;})}
+                          style={{background:isSel&&!podcastChecked?"rgba(251,191,36,.12)":"",borderColor:isSel&&!podcastChecked?"#fbbf24":""}}>
+                          {opt}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))}
+
+                {!podcastChecked ? (
+                  <button className="btn" onClick={()=>setPodcastChecked(true)}
+                    disabled={podcastQAnswers.some(a=>!a)}
+                    style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem",opacity:podcastQAnswers.some(a=>!a)?0.5:1}}>
+                    ✅ Kiểm tra
+                  </button>
+                ) : (
+                  <div className="fade-in" style={{textAlign:"center",padding:".8rem",borderRadius:14,background:"rgba(251,191,36,.07)",border:"1px solid rgba(251,191,36,.15)",marginBottom:".9rem"}}>
+                    {(()=>{const c=podcastQAnswers.filter((a,i)=>a===podcastEp.questions[i].answer).length;
+                      return <><div style={{fontSize:"2rem"}}>{c===3?"🏆":c===2?"👍":"📻"}</div>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.3rem",fontWeight:700,color:"#fbbf24"}}>{c} / {podcastEp.questions.length} đúng</div></>;
+                    })()}
+                    <button className="btn" onClick={()=>{window.speechSynthesis?.cancel();setPodcastEp(null);}} style={{marginTop:".8rem",padding:".65rem 1.5rem",borderRadius:12,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:".9rem"}}>
+                      🎙 Tập mới
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ══ JOURNAL ══ */}
+        {mode===MODES.JOURNAL && (
+          <div>
+            {/* Tab switcher */}
+            <div style={{display:"flex",gap:".5rem",marginBottom:"1rem"}}>
+              {[["write","✍️ Viết hôm nay"],["history","📋 Nhật ký"]].map(([v,l])=>(
+                <button key={v} className="btn" onClick={()=>setJournalView(v)}
+                  style={{flex:1,padding:".5rem",borderRadius:10,fontFamily:"'Crimson Pro',serif",fontSize:".88rem",fontWeight:700,
+                    background:journalView===v?"rgba(167,139,250,.18)":"rgba(255,255,255,.04)",
+                    border:`1.5px solid ${journalView===v?"rgba(167,139,250,.35)":"rgba(255,255,255,.08)"}`,
+                    color:journalView===v?"#c4b5fd":"#6a5a7a"}}>
+                  {l}
+                </button>
+              ))}
+            </div>
+
+            {journalView==="write" && (
+              <div>
+                {/* Prompt */}
+                <div style={{background:"linear-gradient(145deg,rgba(167,139,250,.07),rgba(244,114,182,.05))",border:"1px solid rgba(167,139,250,.18)",borderRadius:16,padding:".9rem 1rem",marginBottom:".9rem"}}>
+                  <div style={{fontSize:".68rem",color:"#6a5a7a",letterSpacing:".1em",marginBottom:".3rem"}}>💬 CÂU HỎI HÔM NAY</div>
+                  <div style={{fontSize:"1rem",color:"#d4c8f0",fontFamily:"'Crimson Pro',serif",fontWeight:600,lineHeight:1.5}}>
+                    {journalPrompt || JOURNAL_PROMPTS[new Date().getDate() % JOURNAL_PROMPTS.length]}
+                  </div>
+                  <button className="btn" onClick={()=>setJournalPrompt(JOURNAL_PROMPTS[Math.floor(Math.random()*JOURNAL_PROMPTS.length)])}
+                    style={{marginTop:".5rem",padding:".22rem .7rem",borderRadius:8,background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.2)",color:"#a78bfa",fontSize:".72rem"}}>
+                    🔀 Câu hỏi khác
+                  </button>
+                </div>
+
+                {!journalResult ? (
+                  <div>
+                    <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".3rem",letterSpacing:".05em"}}>Viết bằng tiếng Anh (3-5 câu)</div>
+                    <textarea className="writing-area" rows={5}
+                      placeholder="Write in English... (3-5 sentences)"
+                      value={journalInput} onChange={e=>setJournalInput(e.target.value)}
+                      onKeyDown={e=>{if(e.key==="Enter"&&e.ctrlKey&&!journalLoading&&journalInput.trim()){}}} />
+                    <div style={{display:"flex",justifyContent:"space-between",fontSize:".65rem",color:"#3a2a4a",marginTop:".25rem",marginBottom:".8rem"}}>
+                      <span>{journalInput.trim().split(/\s+/).filter(Boolean).length} từ</span>
+                      <span>Ctrl+Enter để gửi</span>
+                    </div>
+                    <button className="btn" onClick={async()=>{
+                      if(!journalInput.trim()||journalLoading) return;
+                      setJournalLoading(true); setJournalResult(null);
+                      try {
+                        const prompt = journalPrompt||JOURNAL_PROMPTS[new Date().getDate()%JOURNAL_PROMPTS.length];
+                        const r = await checkJournal(journalInput.trim(), prompt, apiKey);
+                        setJournalResult(r);
+                        setJournalEntries(prev=>[{
+                          date:new Date().toLocaleDateString("vi-VN"),
+                          prompt, text:journalInput.trim(),
+                          corrected:r.corrected, score:r.score, ts:Date.now()
+                        },...prev.slice(0,29)]);
+                      } catch(e){setJournalResult({error:e.message});}
+                      finally{setJournalLoading(false);}
+                    }} disabled={journalLoading||!journalInput.trim()}
+                      style={{width:"100%",padding:".88rem",borderRadius:14,background:journalLoading?"rgba(167,139,250,.2)":"linear-gradient(135deg,#a78bfa,#f472b6)",color:"white",border:"none",fontWeight:700,fontSize:"1rem",opacity:!journalInput.trim()?0.5:1}}>
+                      {journalLoading?"⏳ AI đang đọc...":"🤖 Nhận phản hồi"}
+                    </button>
+                    {journalLoading && <div style={{marginTop:".8rem"}}>{[75,55,65,45].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:9,width:`${w}%`}}/>)}</div>}
+                  </div>
+                ) : journalResult.error ? (
+                  <div style={{color:"#fca5a5",fontSize:".85rem",padding:".7rem .9rem",background:"rgba(248,113,113,.1)",borderRadius:10}}>
+                    ⚠ {journalResult.error}
+                    <button className="btn" onClick={()=>setJournalResult(null)} style={{marginLeft:".7rem",padding:".2rem .6rem",borderRadius:6,background:"rgba(248,113,113,.2)",border:"none",color:"#fca5a5",fontSize:".78rem"}}>Thử lại</button>
+                  </div>
+                ) : (
+                  <div className="fade-in">
+                    {/* Score */}
+                    <div style={{display:"flex",alignItems:"center",gap:".9rem",background:"rgba(0,0,0,.3)",border:`1.5px solid ${journalResult.score>=7?"rgba(74,222,128,.3)":"rgba(251,191,36,.3)"}`,borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem"}}>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2rem",fontWeight:900,color:journalResult.score>=7?"#4ade80":"#fbbf24",lineHeight:1}}>
+                        {journalResult.score}<span style={{fontSize:".65rem",color:"#5a4a6a"}}>/10</span>
+                      </div>
+                      <div style={{flex:1,fontSize:".85rem",fontFamily:"'Crimson Pro',serif",color:"#a09080",fontStyle:"italic"}}>{journalResult.encouragement}</div>
+                    </div>
+
+                    {/* Corrected */}
+                    <div className="journal-card" style={{borderColor:"rgba(74,222,128,.2)"}}>
+                      <div style={{fontSize:".65rem",color:"#4ade80",letterSpacing:".08em",marginBottom:".4rem"}}>✅ PHIÊN BẢN ĐÃ SỬA</div>
+                      <div style={{fontSize:".92rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0",lineHeight:1.7,marginBottom:".4rem"}}>{journalResult.corrected}</div>
+                      <button className="spkbtn btn" onClick={()=>speak(journalResult.corrected,0.82)}>🔊 Nghe</button>
+                    </div>
+
+                    {/* Grammar errors */}
+                    {journalResult.grammarErrors?.length>0 && (
+                      <div className="journal-card" style={{borderColor:"rgba(248,113,113,.18)"}}>
+                        <div style={{fontSize:".65rem",color:"#f87171",letterSpacing:".08em",marginBottom:".5rem"}}>📐 LỖI NGỮ PHÁP</div>
+                        {journalResult.grammarErrors.map((e,i)=>(
+                          <div key={i} style={{marginBottom:".5rem"}}>
+                            <span style={{background:"rgba(248,113,113,.15)",borderRadius:6,padding:".1rem .5rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".88rem",textDecoration:"line-through"}}>{e.error}</span>
+                            <span style={{color:"#5a4a6a",margin:"0 .4rem"}}>→</span>
+                            <span style={{background:"rgba(74,222,128,.15)",borderRadius:6,padding:".1rem .5rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontSize:".88rem"}}>{e.fix}</span>
+                            {e.rule&&<div style={{fontSize:".75rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",marginTop:".2rem",fontStyle:"italic"}}>📌 {e.rule}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Style note */}
+                    {journalResult.styleNote && (
+                      <div className="journal-card" style={{borderColor:"rgba(96,165,250,.18)"}}>
+                        <div style={{fontSize:".65rem",color:"#60a5fa",letterSpacing:".08em",marginBottom:".3rem"}}>💡 VĂN PHONG</div>
+                        <div style={{fontSize:".88rem",color:"#a0b8d0",fontFamily:"'Crimson Pro',serif"}}>{journalResult.styleNote}</div>
+                      </div>
+                    )}
+
+                    <button className="btn" onClick={()=>{setJournalInput("");setJournalResult(null);setJournalPrompt(JOURNAL_PROMPTS[Math.floor(Math.random()*JOURNAL_PROMPTS.length)]);}}
+                      style={{width:"100%",padding:".85rem",borderRadius:14,background:"linear-gradient(135deg,#a78bfa,#f472b6)",color:"white",border:"none",fontWeight:700,fontSize:".98rem"}}>
+                      ✍️ Viết thêm
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {journalView==="history" && (
+              <div>
+                {journalEntries.length===0 ? (
+                  <div style={{textAlign:"center",padding:"3rem 1rem",color:"#5a4a6a"}}>
+                    <div style={{fontSize:"3rem",marginBottom:".7rem"}}>📔</div>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem",color:"#8a7a9a"}}>Chưa có nhật ký nào</div>
+                    <div style={{fontSize:".85rem",marginTop:".3rem",fontFamily:"'Crimson Pro',serif"}}>Viết bài đầu tiên ở tab "✍️ Viết hôm nay"</div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{fontSize:".72rem",color:"#7a6a8a",marginBottom:".6rem"}}>{journalEntries.length} bài nhật ký</div>
+                    {journalEntries.map((e,i)=>(
+                      <div key={i} className="journal-card">
+                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:".4rem"}}>
+                          <div style={{fontSize:".7rem",color:"#a78bfa"}}>{e.date}</div>
+                          <div style={{fontFamily:"'Playfair Display',serif",fontSize:".9rem",fontWeight:700,color:e.score>=7?"#4ade80":"#fbbf24"}}>{e.score}/10</div>
+                        </div>
+                        <div style={{fontSize:".72rem",color:"#5a4a6a",fontStyle:"italic",marginBottom:".3rem",fontFamily:"'Crimson Pro',serif"}}>"{e.prompt}"</div>
+                        <div style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#c4b5fd",lineHeight:1.6,marginBottom:".35rem"}}>{e.text}</div>
+                        {e.corrected&&e.corrected!==e.text&&(
+                          <div style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",color:"#86efac",fontStyle:"italic",display:"flex",alignItems:"center",gap:".4rem"}}>
+                            <span style={{flex:1}}>✅ {e.corrected}</span>
+                            <button className="spkbtn btn" style={{fontSize:".62rem",padding:".1rem .4rem"}} onClick={()=>speak(e.corrected,0.82)}>🔊</button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ══ REVIEW ══ */}
         {mode===MODES.REVIEW && (
