@@ -135,7 +135,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
+const MODES = { DAILY:"daily", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 function getBestVoice(voices) {
@@ -543,6 +543,41 @@ Reply ONLY with raw JSON (no markdown, no unescaped quotes inside strings):
   try { return repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc review: " + e.message); }
 }
 
+
+// ─── Claude API — Generate Daily Challenge ────────────────────────────────
+async function generateDailyChallenge(words, level, apiKey) {
+  // Pick 1 focus word — prefer learning words
+  const focus = words[Math.floor(Math.random() * Math.min(words.length, 8))];
+  const prompt = `Create a daily English learning challenge for a Vietnamese learner at ${level || "B1"} level.
+Focus word: "${focus.word}" (${focus.type}) — meaning: ${focus.meaning}
+
+Generate a mini challenge with 3 tasks. Reply ONLY with raw JSON:
+{
+  "focusWord": "${focus.word}",
+  "focusMeaning": "${focus.meaning}",
+  "focusPhonetic": "${focus.phonetic}",
+  "topic": "<interesting topic in Vietnamese, 3-5 words>",
+  "listenSentence": "<1 natural sentence 12-20 words using ${focus.word}, for listening practice>",
+  "writePrompt": "<question in Vietnamese asking them to write 1-2 sentences using ${focus.word}>",
+  "writeIdeal": "<ideal 1-2 sentence English answer>",
+  "speakSentence": "<same or similar sentence for speaking practice>"
+}`;
+
+  const res = await fetch("https://api.anthropic.com/v1/messages", {
+    method:"POST",
+    headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
+    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:500,
+      system:"Output ONLY raw JSON. No markdown.",
+      messages:[{role:"user",content:prompt}]})
+  });
+  const data = await res.json();
+  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  const m = raw.match(/\{[\s\S]*\}/);
+  if (!m) throw new Error("Phản hồi không hợp lệ");
+  return JSON.parse(m[0]);
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
   const [allWords, setAllWords] = useState(() => loadState("lx_words", BUILT_IN));
@@ -589,6 +624,18 @@ function VocabApp({ apiKey }) {
   const [writingLoading, setWritingLoading] = useState(false);
   const [writingHistory, setWritingHistory] = useState([]);
   const [savedLessons, setSavedLessons] = useState(() => loadState("lx_grammar_lessons", []));
+  // Daily Challenge
+  const [dailyProgress, setDailyProgress] = useState(() => loadState("lx_daily", null));
+  const [dailyChallenge, setDailyChallenge] = useState(null);
+  const [dailyStep, setDailyStep]   = useState(0);   // 0=intro,1=listen,2=write,3=speak,4=done
+  const [dailyLoading, setDailyLoading] = useState(false);
+  const [dailyListened, setDailyListened] = useState(false);
+  const [dailyWriteInput, setDailyWriteInput] = useState("");
+  const [dailyWriteResult, setDailyWriteResult] = useState(null);
+  const [dailyWriteLoading, setDailyWriteLoading] = useState(false);
+  const [dailySpeakResult, setDailySpeakResult] = useState(null);
+  const [dailySpeakListening, setDailySpeakListening] = useState(false);
+  const dailySpeakRecRef = useRef(null);
   // Listen & Dictation shared
   const [listenQueue, setListenQueue] = useState([]);
   const [listenIdx, setListenIdx] = useState(0);
@@ -674,6 +721,7 @@ function VocabApp({ apiKey }) {
   useEffect(() => { try { localStorage.setItem("lx_known", JSON.stringify(knownArr)); } catch {} }, [knownArr]);
   useEffect(() => { try { localStorage.setItem("lx_learning", JSON.stringify(learningArr)); } catch {} }, [learningArr]);
   useEffect(() => { try { localStorage.setItem("lx_grammar_lessons", JSON.stringify(savedLessons)); } catch {} }, [savedLessons]);
+  useEffect(() => { try { localStorage.setItem("lx_daily", JSON.stringify(dailyProgress)); } catch {} }, [dailyProgress]);
 
   // Trigger cloud sync whenever any data changes
   useEffect(() => {
@@ -895,6 +943,11 @@ function VocabApp({ apiKey }) {
     .chat-bubble-user-err{background:linear-gradient(135deg,rgba(248,113,113,.12),rgba(251,191,36,.08));border:1px solid rgba(248,113,113,.2);border-radius:18px 18px 4px 18px;padding:.75rem 1rem;margin-bottom:.6rem;max-width:88%;margin-left:auto;}
     .review-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
     .pulse-rec{animation:recpulse 1.2s ease-in-out infinite;}
+    .daily-step{display:flex;align-items:center;gap:.5rem;padding:.5rem .8rem;border-radius:10px;font-size:.82rem;font-family:'Crimson Pro',serif;}
+    .daily-step.done{background:rgba(74,222,128,.1);border:1px solid rgba(74,222,128,.2);color:#4ade80;}
+    .daily-step.active{background:rgba(167,139,250,.12);border:1px solid rgba(167,139,250,.28);color:#c4b5fd;font-weight:700;}
+    .daily-step.pending{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);color:#4a3a5a;}
+    .streak-badge{display:inline-flex;align-items:center;gap:.3rem;background:linear-gradient(135deg,rgba(251,191,36,.2),rgba(248,113,113,.15));border:1px solid rgba(251,191,36,.3);border-radius:999px;padding:.3rem .9rem;font-size:.85rem;font-weight:700;color:#fbbf24;}
     @keyframes recpulse{0%,100%{opacity:1}50%{opacity:.4}}
     .writing-area{width:100%;background:rgba(255,255,255,.05);border:2px solid rgba(255,255,255,.1);border-radius:14px;padding:.9rem 1rem;color:#e8e0f0;font-family:'Crimson Pro',serif;font-size:1.05rem;outline:none;transition:all .25s;line-height:1.7;resize:none;min-height:110px;}
     .writing-area:focus{border-color:#f472b6;background:rgba(244,114,182,.06);}
@@ -912,7 +965,10 @@ function VocabApp({ apiKey }) {
     .passage-text{font-family:'Crimson Pro',serif;font-size:1.08rem;line-height:2.2;color:#d4c8f0;}
   `;
 
+  const todayStr = new Date().toDateString();
+  const dailyDone = dailyProgress?.date === todayStr && dailyProgress?.completed;
   const modeLabel = {
+    [MODES.DAILY]: dailyDone ? "🔥 Daily ✓" : "🔥 Daily",
     [MODES.FLASHCARD]:"📇 Thẻ",
     [MODES.QUIZ]:"🧠 Quiz",
     [MODES.SRS]: dueCount>0 ? `🔁 SRS (${dueCount})` : "🔁 SRS",
@@ -2720,6 +2776,310 @@ function VocabApp({ apiKey }) {
             )}
           </div>
         )}
+
+
+        {/* ══ DAILY CHALLENGE ══ */}
+        {mode===MODES.DAILY && (() => {
+          const todayStr = new Date().toDateString();
+          const streakCount = dailyProgress?.streak || 0;
+          const isDone = dailyProgress?.date === todayStr && dailyProgress?.completed;
+
+          // Word-level score helper
+          const normalize = s => s.toLowerCase().trim().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
+          const wordScore = (spoken, target) => {
+            const s = normalize(spoken).split(" "), t = normalize(target).split(" ");
+            if (!t.length) return 0;
+            let m = 0;
+            t.forEach((tw,i)=>{ const sw=s[i]||""; if(sw===tw){m+=1;}else{let c=0;for(let j=0;j<Math.min(sw.length,tw.length);j++)if(sw[j]===tw[j])c++;m+=(c/Math.max(sw.length,tw.length,1))*.6;} });
+            return Math.round((m/t.length)*100);
+          };
+
+          const steps = [
+            {id:1, icon:"🎧", label:"Nghe & nhận biết"},
+            {id:2, icon:"✍️", label:"Viết câu"},
+            {id:3, icon:"🎤", label:"Luyện nói"},
+          ];
+
+          const startChallenge = async () => {
+            setDailyLoading(true); setDailyChallenge(null);
+            setDailyStep(1); setDailyListened(false);
+            setDailyWriteInput(""); setDailyWriteResult(null); setDailySpeakResult(null);
+            try {
+              const pool = allWords.length > 0 ? allWords : [];
+              const challenge = await generateDailyChallenge(pool, levelFilter==="All"?"B1":levelFilter, apiKey);
+              setDailyChallenge(challenge);
+            } catch(e) { alert("Lỗi tạo challenge: "+e.message); setDailyStep(0); }
+            finally { setDailyLoading(false); }
+          };
+
+          const completeDaily = () => {
+            const yesterday = dailyProgress?.date;
+            const yStr = new Date(Date.now()-86400000).toDateString();
+            const newStreak = (yesterday === yStr || yesterday === todayStr) ? (dailyProgress?.streak||0)+1 : 1;
+            setDailyProgress({ date: todayStr, completed: true, streak: newStreak, word: dailyChallenge?.focusWord });
+          };
+
+          const checkWrite = async () => {
+            if (!dailyWriteInput.trim()) return;
+            setDailyWriteLoading(true);
+            try {
+              const res = await checkWriting({word:dailyChallenge.focusWord,meaning:dailyChallenge.focusMeaning,type:"",level:"B1",phonetic:"",meaningEn:"",example:""}, dailyWriteInput.trim(), apiKey);
+              setDailyWriteResult(res);
+            } catch(e) { setDailyWriteResult({error:e.message}); }
+            finally { setDailyWriteLoading(false); }
+          };
+
+          const startSpeak = () => {
+            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SR) return;
+            if (dailySpeakListening) { dailySpeakRecRef.current?.stop(); return; }
+            const rec = new SR();
+            dailySpeakRecRef.current = rec;
+            rec.lang="en-US"; rec.continuous=false; rec.interimResults=false; rec.maxAlternatives=3;
+            rec.onstart = () => setDailySpeakListening(true);
+            rec.onend   = () => setDailySpeakListening(false);
+            rec.onresult = (e) => {
+              let best="", bestScore=-1;
+              const target = dailyChallenge?.speakSentence||"";
+              for(let i=0;i<e.results[0].length;i++){const t=e.results[0][i].transcript;const s=wordScore(t,target);if(s>bestScore){bestScore=s;best=t;}}
+              setDailySpeakResult({transcript:best,score:bestScore});
+            };
+            rec.start();
+          };
+
+          // ── INTRO / DONE SCREEN ────────────────────────────────────────
+          if (dailyStep===0 || !dailyChallenge) return (
+            <div>
+              {/* Streak */}
+              <div style={{display:"flex",justifyContent:"center",marginBottom:"1.2rem"}}>
+                <div className="streak-badge">🔥 {streakCount} ngày liên tiếp</div>
+              </div>
+
+              {/* Done banner */}
+              {isDone && (
+                <div style={{background:"rgba(74,222,128,.08)",border:"1px solid rgba(74,222,128,.2)",borderRadius:16,padding:"1rem 1.2rem",marginBottom:"1rem",textAlign:"center"}}>
+                  <div style={{fontSize:"1.8rem",marginBottom:".3rem"}}>✅</div>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:"#4ade80",fontSize:"1.05rem"}}>Hôm nay đã hoàn thành!</div>
+                  <div style={{fontSize:".82rem",color:"#5a7a5a",fontFamily:"'Crimson Pro',serif",marginTop:".2rem"}}>Từ hôm nay: <b style={{color:"#86efac"}}>{dailyProgress?.word}</b></div>
+                </div>
+              )}
+
+              {/* Info card */}
+              <div style={{background:"linear-gradient(145deg,rgba(251,191,36,.07),rgba(167,139,250,.05))",border:"1px solid rgba(251,191,36,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1.2rem"}}>
+                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#fde68a",marginBottom:".3rem"}}>🔥 Daily Challenge</div>
+                <div style={{fontSize:".85rem",color:"#9a8a6a",fontFamily:"'Crimson Pro',serif",lineHeight:1.7}}>
+                  Mỗi ngày 1 challenge gồm <b style={{color:"#fbbf24"}}>3 nhiệm vụ</b> kết hợp nghe, viết và nói với 1 từ vựng. Chỉ mất <b style={{color:"#fbbf24"}}>3-5 phút</b>.
+                </div>
+                <div style={{display:"flex",gap:".6rem",marginTop:".9rem",flexWrap:"wrap"}}>
+                  {steps.map(s=>(
+                    <div key={s.id} style={{flex:1,minWidth:90,textAlign:"center",background:"rgba(0,0,0,.2)",borderRadius:10,padding:".5rem",fontSize:".75rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif"}}>
+                      <div style={{fontSize:"1.3rem"}}>{s.icon}</div>{s.label}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {dailyLoading ? (
+                <div style={{marginTop:".8rem"}}>
+                  {[80,60,70,50].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:10,width:`${w}%`}}/>)}
+                </div>
+              ) : (
+                <button className="btn" onClick={startChallenge}
+                  style={{width:"100%",padding:".9rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                  {isDone ? "🔄 Làm lại" : "🚀 Bắt đầu ngay"}
+                </button>
+              )}
+            </div>
+          );
+
+          const c = dailyChallenge;
+
+          // Progress bar
+          const ProgressBar = () => (
+            <div style={{marginBottom:"1rem"}}>
+              <div style={{display:"flex",gap:".4rem",marginBottom:".5rem"}}>
+                {steps.map(s=>(
+                  <div key={s.id} className={`daily-step ${dailyStep>s.id?"done":dailyStep===s.id?"active":"pending"}`} style={{flex:1,justifyContent:"center"}}>
+                    {dailyStep>s.id?"✓ ":""}{s.icon} {s.label}
+                  </div>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:"2px"}}>
+                {steps.map(s=>(
+                  <div key={s.id} style={{flex:1,height:3,borderRadius:2,background:dailyStep>s.id?"#4ade80":dailyStep===s.id?"#fbbf24":"rgba(255,255,255,.08)",transition:"background .4s"}}/>
+                ))}
+              </div>
+            </div>
+          );
+
+          // Focus word display
+          const WordCard = () => (
+            <div style={{background:"rgba(0,0,0,.25)",border:"1px solid rgba(251,191,36,.18)",borderRadius:14,padding:".9rem 1rem",marginBottom:"1rem",display:"flex",alignItems:"center",gap:".8rem"}}>
+              <div>
+                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.4rem",fontWeight:900,color:"#f5f0ff"}}>{c.focusWord}</div>
+                <div style={{color:"#a78bfa",fontSize:".82rem",fontStyle:"italic",fontFamily:"'Crimson Pro',serif"}}>{c.focusPhonetic}</div>
+              </div>
+              <div style={{flex:1,fontSize:".88rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif"}}>{c.focusMeaning}</div>
+              <button className="spkbtn btn" onClick={()=>speak(c.focusWord,0.7)}>🔊</button>
+            </div>
+          );
+
+          // ── STEP 1: LISTEN ─────────────────────────────────────────────
+          if (dailyStep===1) return (
+            <div>
+              <ProgressBar/>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem",fontWeight:700,color:"#fde68a",marginBottom:".6rem"}}>🎧 Nhiệm vụ 1: Nghe câu</div>
+              <WordCard/>
+              <div style={{background:"linear-gradient(145deg,#1a1030,#0e1a2e)",border:"1px solid rgba(96,165,250,.2)",borderRadius:18,padding:"1.4rem",textAlign:"center",marginBottom:"1rem"}}>
+                <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".1em",marginBottom:".8rem"}}>NGHE CÂU VÀ GHI NHỚ</div>
+                <button className={`mic-btn btn ${dailyListened?"idle":""}`} onClick={()=>{setDailyListened(true);speak(c.listenSentence,0.78);}}>
+                  {dailyListened?"🔊":"▶️"}
+                </button>
+                <div style={{fontSize:".78rem",color:"#5a4a6a",marginTop:".6rem",fontFamily:"'Crimson Pro',serif"}}>{dailyListened?"Nhấn để nghe lại":"Nhấn để nghe câu"}</div>
+                {dailyListened && (
+                  <div className="fade-in" style={{marginTop:"1rem"}}>
+                    <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginBottom:"1rem"}}>
+                      {[[0.55,"🐢"],[0.78,"▶"],[1.0,"🐇"]].map(([r,l])=>(
+                        <button key={r} className="btn" onClick={()=>speak(c.listenSentence,r)}
+                          style={{padding:".28rem .7rem",borderRadius:999,background:"rgba(96,165,250,.1)",border:"1px solid rgba(96,165,250,.2)",color:"#93c5fd",fontSize:".75rem"}}>{l}</button>
+                      ))}
+                    </div>
+                    <div style={{background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.15)",borderRadius:10,padding:".6rem .9rem",fontSize:".88rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#86efac"}}>
+                      "{c.listenSentence}"
+                    </div>
+                  </div>
+                )}
+              </div>
+              {dailyListened && (
+                <button className="btn" onClick={()=>setDailyStep(2)}
+                  style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                  Tiếp theo: Viết câu ✍️
+                </button>
+              )}
+            </div>
+          );
+
+          // ── STEP 2: WRITE ──────────────────────────────────────────────
+          if (dailyStep===2) return (
+            <div>
+              <ProgressBar/>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem",fontWeight:700,color:"#fda4af",marginBottom:".6rem"}}>✍️ Nhiệm vụ 2: Viết câu</div>
+              <WordCard/>
+              <div style={{background:"rgba(244,114,182,.05)",border:"1px solid rgba(244,114,182,.15)",borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem",fontSize:".9rem",color:"#d4c8f0",fontFamily:"'Crimson Pro',serif",lineHeight:1.6}}>
+                💬 {c.writePrompt}
+              </div>
+              {!dailyWriteResult ? (
+                <div>
+                  <textarea className="writing-area" rows={3} placeholder={`Viết 1-2 câu sử dụng "${c.focusWord}"...`}
+                    value={dailyWriteInput} onChange={e=>setDailyWriteInput(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"&&e.ctrlKey)checkWrite();}} />
+                  <div style={{fontSize:".65rem",color:"#3a2a4a",marginTop:".25rem",marginBottom:".8rem"}}>Ctrl+Enter để gửi</div>
+                  <button className="btn" onClick={checkWrite} disabled={dailyWriteLoading||!dailyWriteInput.trim()}
+                    style={{width:"100%",padding:".88rem",borderRadius:14,background:dailyWriteLoading?"rgba(244,114,182,.2)":"linear-gradient(135deg,#f472b6,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:"1rem",opacity:!dailyWriteInput.trim()?0.5:1}}>
+                    {dailyWriteLoading?"⏳ Đang chấm...":"🤖 Chấm điểm"}
+                  </button>
+                </div>
+              ) : dailyWriteResult.error ? (
+                <div style={{color:"#fca5a5",fontSize:".85rem",padding:".7rem .9rem",background:"rgba(248,113,113,.1)",borderRadius:10}}>
+                  ⚠ {dailyWriteResult.error}
+                  <button className="btn" onClick={()=>setDailyWriteResult(null)} style={{marginLeft:".7rem",padding:".2rem .6rem",borderRadius:6,background:"rgba(248,113,113,.2)",border:"none",color:"#fca5a5",fontSize:".78rem"}}>Thử lại</button>
+                </div>
+              ) : (
+                <div className="fade-in">
+                  {/* Score */}
+                  <div style={{display:"flex",alignItems:"center",gap:".9rem",background:"rgba(0,0,0,.25)",border:`1.5px solid ${dailyWriteResult.overallScore>=7?"rgba(74,222,128,.3)":"rgba(251,191,36,.3)"}`,borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem"}}>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2rem",fontWeight:900,color:dailyWriteResult.overallScore>=7?"#4ade80":"#fbbf24",lineHeight:1}}>{dailyWriteResult.overallScore}<span style={{fontSize:".7rem",color:"#5a4a6a"}}>/10</span></div>
+                    <div style={{flex:1}}>
+                      <div style={{fontSize:".9rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0",marginBottom:".2rem",fontStyle:"italic"}}>"{dailyWriteInput}"</div>
+                      <div style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",color:"#86efac",display:"flex",alignItems:"center",gap:".4rem"}}>
+                        ✅ {dailyWriteResult.correctedSentence}
+                        <button className="spkbtn btn" style={{fontSize:".62rem",padding:".1rem .4rem"}} onClick={()=>speak(dailyWriteResult.correctedSentence,0.82)}>🔊</button>
+                      </div>
+                    </div>
+                  </div>
+                  {/* Grammar errors */}
+                  {dailyWriteResult.grammarErrors?.length>0 && (
+                    <div style={{fontSize:".82rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",padding:".6rem .9rem",background:"rgba(248,113,113,.07)",borderRadius:10,marginBottom:".7rem"}}>
+                      {dailyWriteResult.grammarErrors.map((e,i)=><div key={i}>📐 {e.rule}</div>)}
+                    </div>
+                  )}
+                  <button className="btn" onClick={()=>setDailyStep(3)}
+                    style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                    Tiếp theo: Luyện nói 🎤
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+
+          // ── STEP 3: SPEAK ──────────────────────────────────────────────
+          if (dailyStep===3) return (
+            <div>
+              <ProgressBar/>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem",fontWeight:700,color:"#c4b5fd",marginBottom:".6rem"}}>🎤 Nhiệm vụ 3: Luyện nói</div>
+              <WordCard/>
+              <div style={{background:"linear-gradient(145deg,#1a1030,#251545)",border:"1px solid rgba(167,139,250,.2)",borderRadius:18,padding:"1.4rem",textAlign:"center",marginBottom:"1rem"}}>
+                <div style={{fontSize:".85rem",fontFamily:"'Crimson Pro',serif",color:"#c4b5fd",marginBottom:".8rem",fontStyle:"italic"}}>
+                  Đọc to câu này:<br/><b style={{color:"#f0eaff",fontStyle:"normal"}}>"{c.speakSentence}"</b>
+                </div>
+                <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginBottom:"1rem"}}>
+                  {[[0.65,"🐢"],[0.85,"▶"],[1.05,"🐇"]].map(([r,l])=>(
+                    <button key={r} className="btn" onClick={()=>speak(c.speakSentence,r)}
+                      style={{padding:".28rem .7rem",borderRadius:999,background:"rgba(167,139,250,.12)",border:"1px solid rgba(167,139,250,.22)",color:"#c4b5fd",fontSize:".75rem"}}>{l} Nghe mẫu</button>
+                  ))}
+                </div>
+                <button className={`mic-btn btn ${dailySpeakListening?"listening":"idle"}`} onClick={startSpeak}>
+                  {dailySpeakListening?"⏹":"🎤"}
+                </button>
+                <div style={{fontSize:".75rem",color:dailySpeakListening?"#f87171":"#5a4a6a",marginTop:".5rem",fontFamily:"'Crimson Pro',serif"}}>
+                  {dailySpeakListening?"🔴 Đang ghi âm...":"Nhấn 🎤 và đọc câu trên"}
+                </div>
+              </div>
+
+              {dailySpeakResult && (
+                <div className="fade-in" style={{background:"rgba(0,0,0,.25)",border:`1.5px solid ${dailySpeakResult.score>=75?"rgba(74,222,128,.3)":"rgba(251,191,36,.3)"}`,borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem",display:"flex",alignItems:"center",gap:".9rem"}}>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2rem",fontWeight:900,color:dailySpeakResult.score>=75?"#4ade80":"#fbbf24",lineHeight:1,minWidth:52,textAlign:"center"}}>
+                    {dailySpeakResult.score}<span style={{fontSize:".65rem",color:"#5a4a6a"}}>/100</span>
+                  </div>
+                  <div style={{flex:1,fontSize:".85rem",fontFamily:"'Crimson Pro',serif",color:"#a09ab0",fontStyle:"italic"}}>
+                    "{dailySpeakResult.transcript}"
+                  </div>
+                </div>
+              )}
+
+              {dailySpeakResult && (
+                <button className="btn" onClick={()=>{ setDailyStep(4); completeDaily(); }}
+                  style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#4ade80,#22c55e)",color:"#0a1a0e",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                  🎉 Hoàn thành Challenge!
+                </button>
+              )}
+            </div>
+          );
+
+          // ── STEP 4: DONE ───────────────────────────────────────────────
+          return (
+            <div style={{textAlign:"center",padding:"2rem 1rem"}}>
+              <div style={{fontSize:"4rem",marginBottom:".7rem"}}>🏆</div>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.6rem",fontWeight:900,background:"linear-gradient(90deg,#fbbf24,#f472b6)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:".4rem"}}>
+                Challenge hoàn thành!
+              </div>
+              <div className="streak-badge" style={{margin:".6rem auto",display:"inline-flex"}}>🔥 {dailyProgress?.streak||1} ngày liên tiếp!</div>
+              <div style={{fontSize:".88rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",marginTop:".8rem",marginBottom:"1.5rem"}}>
+                Từ hôm nay: <b style={{color:"#f0eaff",fontSize:"1.1rem"}}>{c.focusWord}</b> — {c.focusMeaning}
+              </div>
+              <div style={{display:"flex",gap:".7rem",justifyContent:"center"}}>
+                <button className="btn" onClick={()=>setDailyStep(0)}
+                  style={{padding:".75rem 1.5rem",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#8a7a9a",fontSize:".9rem"}}>
+                  ← Về trang
+                </button>
+                <button className="btn" onClick={()=>{ setMode(MODES.FLASHCARD); }}
+                  style={{padding:".75rem 1.5rem",borderRadius:12,background:"linear-gradient(135deg,#a78bfa,#ec4899)",color:"white",border:"none",fontSize:".9rem",fontWeight:600}}>
+                  📇 Ôn thêm từ vựng
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ══ REVIEW ══ */}
         {mode===MODES.REVIEW && (
