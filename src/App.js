@@ -15,24 +15,11 @@ function ApiKeyGate({ children }) {
     }
     setTesting(true); setError("");
     try {
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": key,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
-        body: JSON.stringify({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 10,
-          messages: [{ role: "user", content: "hi" }]
-        })
+      await anthropicFetch(key, {
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 10,
+        messages: [{ role: "user", content: "hi" }]
       });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d?.error?.message || "Key không hợp lệ hoặc chưa có credit");
-      }
       localStorage.setItem("lx_apikey", key);
       setApiKey(key);
     } catch(e) {
@@ -265,6 +252,35 @@ async function saveToSupabase(sb, payload) {
   );
 }
 
+// ─── Fetch with retry on overload ────────────────────────────────────────
+async function anthropicFetch(apiKey, body, maxRetries = 3) {
+  let lastErr;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "anthropic-dangerous-direct-browser-access": "true",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) return data;
+    const msg = data?.error?.message || `HTTP ${res.status}`;
+    const isOverload = res.status === 529 || msg.toLowerCase().includes("overload");
+    if (isOverload && attempt < maxRetries) {
+      // Exponential backoff: 2s, 4s, 8s
+      await new Promise(r => setTimeout(r, 2000 * attempt));
+      continue;
+    }
+    lastErr = new Error(msg);
+    break;
+  }
+  throw lastErr || new Error("Không thể kết nối API");
+}
+
 // ─── AI Word Lookup ───────────────────────────────────────────────────────
 async function aiLookupWord(input, apiKey) {
   const systemPrompt = "You are a bilingual English-Vietnamese dictionary. Always respond with only a raw JSON object, no markdown, no explanation.";
@@ -277,28 +293,12 @@ If it is a Vietnamese word or phrase, find the best English equivalent and provi
 Return ONLY this JSON (no backticks, no extra text):
 {"word":"<English word>","phonetic":"<IPA>","type":"<adj|verb|noun|adv|phrase>","level":"<A1|A2|B1|B2|C1|C2>","meaning":"<Vietnamese meaning>","meaningEn":"<English definition>","example":"<example sentence>"}`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "anthropic-dangerous-direct-browser-access": "true",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 500,
-      system: systemPrompt,
-      messages: [{ role: "user", content: userPrompt }]
-    })
+  const data = await anthropicFetch(apiKey, {
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 500,
+    system: systemPrompt,
+    messages: [{ role: "user", content: userPrompt }]
   });
-
-  let data;
-  try { data = await res.json(); } catch(e) { throw new Error("Không đọc được phản hồi từ server"); }
-
-  if (!res.ok) {
-    throw new Error(data?.error?.message || `HTTP ${res.status}`);
-  }
 
   const raw = (data.content || []).map(b => b.text || "").join("").trim();
 
@@ -329,24 +329,12 @@ Rules:
 Respond ONLY with this JSON (no markdown, no backticks):
 {"topic":"<short topic title in Vietnamese>","passage":"<paragraph with [BLANK_1], [BLANK_2] etc.>","blanks":["word1","word2"],"meanings":["Vietnamese meaning 1","Vietnamese meaning 2"]}`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "anthropic-dangerous-direct-browser-access": "true",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 800,
-      system: "You are a helpful assistant. Always respond with only raw JSON, no markdown fences, no explanation.",
-      messages: [{ role: "user", content: prompt }]
-    })
+  const data = await anthropicFetch(apiKey, {
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 800,
+    system: "You are a helpful assistant. Always respond with only raw JSON, no markdown fences, no explanation.",
+    messages: [{ role: "user", content: prompt }]
   });
-  let data;
-  try { data = await res.json(); } catch(e) { throw new Error("Không đọc được phản hồi"); }
-  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
   const raw = (data.content || []).map(b => b.text || "").join("").trim();
   const match = raw.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("Phản hồi không đúng định dạng: " + raw.slice(0, 80));
@@ -407,25 +395,12 @@ Return ONLY a JSON object. Critical rules:
 JSON structure:
 {"overallScore":7,"wordUsed":true,"wordUsedCorrectly":true,"correctedSentence":"the corrected sentence","spellingErrors":[{"wrong":"wrng","correct":"wrong","tip":"spelling tip"}],"grammarErrors":[{"error":"bad form","correction":"good form","rule":"quy tac bang tieng Viet"}],"styleAdvice":"loi khuyen van phong bang tieng Viet","lessons":[{"title":"Ten bai hoc","explanation":"Giai thich bang tieng Viet, khong dung dau ngoac kep","example":"An example sentence."}],"encouragement":"Loi dong vien bang tieng Viet."}`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "anthropic-dangerous-direct-browser-access": "true",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-5",
-      max_tokens: 1500,
-      system: "You are an English writing coach. Output ONLY a single-line compact JSON object. Never put double-quote characters inside JSON string values — use single quotes or reword instead. Never add markdown.",
-      messages: [{ role: "user", content: prompt }]
-    })
+  const data = await anthropicFetch(apiKey, {
+    model: "claude-sonnet-4-5",
+    max_tokens: 1500,
+    system: "You are an English writing coach. Output ONLY a single-line compact JSON object. Never put double-quote characters inside JSON string values — use single quotes or reword instead. Never add markdown.",
+    messages: [{ role: "user", content: prompt }]
   });
-
-  let data;
-  try { data = await res.json(); } catch(e) { throw new Error("Không đọc được phản hồi"); }
-  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
   const raw = (data.content || []).map(b => b.text || "").join("").trim();
   try {
     return repairAndParseJSON(raw);
@@ -447,24 +422,12 @@ Requirements:
 
 Reply with ONLY the sentence, no quotes, no explanation.`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "anthropic-dangerous-direct-browser-access": "true",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 120,
-      system: "Reply with ONLY one English sentence. No quotes. No explanation.",
-      messages: [{ role: "user", content: prompt }]
-    })
+  const data = await anthropicFetch(apiKey, {
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 120,
+    system: "Reply with ONLY one English sentence. No quotes. No explanation.",
+    messages: [{ role: "user", content: prompt }]
   });
-  let data;
-  try { data = await res.json(); } catch(e) { throw new Error("Không đọc được phản hồi"); }
-  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
   const sentence = (data.content || []).map(b => b.text || "").join("").trim().replace(/^["\']+|["\']+$/g, "");
   if (!sentence || sentence.length < 20) throw new Error("Câu quá ngắn, thử lại");
   return sentence;
@@ -493,15 +456,9 @@ Reply ONLY with this JSON (no markdown):
 
 Alternate strictly: ai, user, ai, user... Start with ai.`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST",
-    headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
-    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:900,
-      system:"Output ONLY raw JSON. No markdown. No explanation.",
-      messages:[{role:"user",content:prompt}]})
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
+    system:"Output ONLY raw JSON. No markdown. No explanation.",
+    messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) throw new Error("Phản hồi không hợp lệ");
@@ -530,15 +487,9 @@ For each user turn, provide:
 Reply ONLY with raw JSON (no markdown, no unescaped quotes inside strings):
 {"overallScore":75,"summary":"tong ket bang tieng Viet","turns":[{"turnIndex":1,"said":"what they said","refined":"more natural version","grammarNote":"grammar fix or empty string","pronunciationTip":"one phonetic tip","score":80}]}`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST",
-    headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
-    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:1200,
-      system:"You are an English conversation coach. Output ONLY compact single-line JSON. Never use unescaped double quotes inside string values.",
-      messages:[{role:"user",content:prompt}]})
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1200,
+    system:"You are an English conversation coach. Output ONLY compact single-line JSON. Never use unescaped double quotes inside string values.",
+    messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   try { return repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc review: " + e.message); }
 }
@@ -563,15 +514,9 @@ Generate a mini challenge with 3 tasks. Reply ONLY with raw JSON:
   "speakSentence": "<same or similar sentence for speaking practice>"
 }`;
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST",
-    headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
-    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:500,
-      system:"Output ONLY raw JSON. No markdown.",
-      messages:[{role:"user",content:prompt}]})
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:500,
+    system:"Output ONLY raw JSON. No markdown.",
+    messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) throw new Error("Phản hồi không hợp lệ");
@@ -596,12 +541,7 @@ Reply ONLY with raw JSON:
   ],
   "vocabulary": ["word1","word2","word3"]
 }`;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
-    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:900,system:"Output ONLY raw JSON. No markdown.",messages:[{role:"user",content:prompt}]})
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message||`HTTP ${res.status}`);
+  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,system:"Output ONLY raw JSON. No markdown.",messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   const m = raw.match(/\{[\s\S]*\}/); if (!m) throw new Error("JSON không hợp lệ");
   const p = JSON.parse(m[0]);
@@ -631,12 +571,7 @@ Reply ONLY with raw JSON:
   ],
   "keyWords": ["word1","word2"]
 }`;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
-    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:1000,system:"Output ONLY raw JSON. No markdown.",messages:[{role:"user",content:prompt}]})
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message||`HTTP ${res.status}`);
+  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1000,system:"Output ONLY raw JSON. No markdown.",messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   const m = raw.match(/\{[\s\S]*\}/); if (!m) throw new Error("JSON không hợp lệ");
   return JSON.parse(m[0]);
@@ -650,12 +585,7 @@ Their entry: "${entry}"
 
 Reply ONLY with raw JSON (no unescaped double-quotes inside strings):
 {"score":7,"corrected":"corrected version of their entry","grammarErrors":[{"error":"bad","fix":"good","rule":"quy tac"}],"styleNote":"loi khuyen van phong tieng Viet","encouragement":"loi dong vien tieng Viet"}`;
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method:"POST", headers:{"Content-Type":"application/json","anthropic-dangerous-direct-browser-access":"true","x-api-key":apiKey,"anthropic-version":"2023-06-01"},
-    body:JSON.stringify({model:"claude-haiku-4-5-20251001",max_tokens:600,system:"Output ONLY compact single-line JSON. No unescaped double-quotes inside string values.",messages:[{role:"user",content:p}]})
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message||`HTTP ${res.status}`);
+  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:600,system:"Output ONLY compact single-line JSON. No unescaped double-quotes inside string values.",messages:[{role:"user",content:p}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   try { return repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
 }
