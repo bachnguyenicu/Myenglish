@@ -460,11 +460,11 @@ Alternate strictly: ai, user, ai, user... Start with ai.`;
     system:"Output ONLY raw JSON. No markdown. No explanation. Never use unescaped double-quote characters inside string values.",
     messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  try {
-    const parsed = repairAndParseJSON(raw);
-    if (!parsed.turns || parsed.turns.length < 2) throw new Error("Kịch bản không hợp lệ");
-    return parsed;
-  } catch(e) { throw new Error("Lỗi đọc kịch bản: "+e.message); }
+  let cv;
+  try { cv = repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc kịch bản: "+e.message); }
+  if (!Array.isArray(cv.turns) || cv.turns.length < 2) throw new Error("Kịch bản không hợp lệ, thử lại nhé!");
+  cv.topic = cv.topic || topic || "Hội thoại tiếng Anh";
+  return cv;
 }
 
 // ─── Claude API — Review Full Conversation ────────────────────────────────
@@ -518,8 +518,13 @@ Generate a mini challenge with 3 tasks. Reply ONLY with raw JSON:
     system:"Output ONLY raw JSON. No markdown. Never use unescaped double-quote characters inside string values.",
     messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  try { return repairAndParseJSON(raw); }
-  catch(e) { throw new Error("Lỗi đọc challenge: "+e.message); }
+  let ch;
+  try { ch = repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc challenge: "+e.message); }
+  if (!ch.focusWord) throw new Error("Không tạo được challenge, thử lại nhé!");
+  ch.listenSentence = ch.listenSentence || ch.speakSentence || focus.example || "";
+  ch.speakSentence  = ch.speakSentence  || ch.listenSentence;
+  ch.writePrompt    = ch.writePrompt    || `Viết 1-2 câu sử dụng từ "${ch.focusWord}".`;
+  return ch;
 }
 
 
@@ -546,7 +551,10 @@ Reply ONLY with raw JSON:
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   try {
     const p = repairAndParseJSON(raw);
-    if (!p.passage||!p.questions) throw new Error("Thiếu dữ liệu");
+    if (!p.passage) throw new Error("Thiếu đoạn văn");
+    if (!Array.isArray(p.questions) || p.questions.length === 0) throw new Error("Thiếu câu hỏi");
+    if (!Array.isArray(p.vocabulary)) p.vocabulary = [];
+    p.title = p.title || "Bài đọc";
     return p;
   } catch(e) { throw new Error("Lỗi đọc bài đọc: "+e.message); }
 }
@@ -577,7 +585,15 @@ Reply ONLY with raw JSON:
     system:"Output ONLY raw JSON. No markdown. Never use unescaped double-quote characters inside string values — use single quotes instead.",
     messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  try { return repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc podcast: "+e.message); }
+  let parsed;
+  try { parsed = repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc podcast: "+e.message); }
+  // Ensure required arrays exist
+  if (!Array.isArray(parsed.script) || parsed.script.length === 0) throw new Error("Script podcast trống, thử lại nhé!");
+  if (!Array.isArray(parsed.questions)) parsed.questions = [];
+  if (!Array.isArray(parsed.keyWords)) parsed.keyWords = [];
+  parsed.title  = parsed.title  || "Mini Podcast";
+  parsed.topic  = parsed.topic  || "";
+  return parsed;
 }
 
 // ─── Claude API — Journal Feedback ───────────────────────────────────────
