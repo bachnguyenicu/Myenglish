@@ -457,14 +457,14 @@ Reply ONLY with this JSON (no markdown):
 Alternate strictly: ai, user, ai, user... Start with ai.`;
 
   const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
-    system:"Output ONLY raw JSON. No markdown. No explanation.",
+    system:"Output ONLY raw JSON. No markdown. No explanation. Never use unescaped double-quote characters inside string values.",
     messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error("Phản hồi không hợp lệ");
-  const parsed = JSON.parse(m[0]);
-  if (!parsed.turns || parsed.turns.length < 2) throw new Error("Kịch bản không hợp lệ");
-  return parsed;
+  try {
+    const parsed = repairAndParseJSON(raw);
+    if (!parsed.turns || parsed.turns.length < 2) throw new Error("Kịch bản không hợp lệ");
+    return parsed;
+  } catch(e) { throw new Error("Lỗi đọc kịch bản: "+e.message); }
 }
 
 // ─── Claude API — Review Full Conversation ────────────────────────────────
@@ -515,12 +515,11 @@ Generate a mini challenge with 3 tasks. Reply ONLY with raw JSON:
 }`;
 
   const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:500,
-    system:"Output ONLY raw JSON. No markdown.",
+    system:"Output ONLY raw JSON. No markdown. Never use unescaped double-quote characters inside string values.",
     messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) throw new Error("Phản hồi không hợp lệ");
-  return JSON.parse(m[0]);
+  try { return repairAndParseJSON(raw); }
+  catch(e) { throw new Error("Lỗi đọc challenge: "+e.message); }
 }
 
 
@@ -541,12 +540,15 @@ Reply ONLY with raw JSON:
   ],
   "vocabulary": ["word1","word2","word3"]
 }`;
-  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,system:"Output ONLY raw JSON. No markdown.",messages:[{role:"user",content:prompt}]});
+  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
+    system:"Output ONLY raw JSON. No markdown. Never use unescaped double-quote characters inside string values — use single quotes instead.",
+    messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  const m = raw.match(/\{[\s\S]*\}/); if (!m) throw new Error("JSON không hợp lệ");
-  const p = JSON.parse(m[0]);
-  if (!p.passage||!p.questions) throw new Error("Thiếu dữ liệu");
-  return p;
+  try {
+    const p = repairAndParseJSON(raw);
+    if (!p.passage||!p.questions) throw new Error("Thiếu dữ liệu");
+    return p;
+  } catch(e) { throw new Error("Lỗi đọc bài đọc: "+e.message); }
 }
 
 // ─── Claude API — Mini Podcast ────────────────────────────────────────────
@@ -571,10 +573,11 @@ Reply ONLY with raw JSON:
   ],
   "keyWords": ["word1","word2"]
 }`;
-  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1000,system:"Output ONLY raw JSON. No markdown.",messages:[{role:"user",content:prompt}]});
+  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1000,
+    system:"Output ONLY raw JSON. No markdown. Never use unescaped double-quote characters inside string values — use single quotes instead.",
+    messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  const m = raw.match(/\{[\s\S]*\}/); if (!m) throw new Error("JSON không hợp lệ");
-  return JSON.parse(m[0]);
+  try { return repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc podcast: "+e.message); }
 }
 
 // ─── Claude API — Journal Feedback ───────────────────────────────────────
