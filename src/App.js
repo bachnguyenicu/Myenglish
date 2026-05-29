@@ -598,15 +598,37 @@ Reply ONLY with raw JSON:
 
 // ─── Claude API — Journal Feedback ───────────────────────────────────────
 async function checkJournal(entry, prompt, apiKey) {
-  const p = `Review this English journal entry from a Vietnamese learner.
-Prompt they answered: "${prompt}"
-Their entry: "${entry}"
+  const p = `You are an English writing coach for Vietnamese learners. Review this journal entry.
 
-Reply ONLY with raw JSON (no unescaped double-quotes inside strings):
-{"score":7,"corrected":"corrected version of their entry","grammarErrors":[{"error":"bad","fix":"good","rule":"quy tac"}],"styleNote":"loi khuyen van phong tieng Viet","encouragement":"loi dong vien tieng Viet"}`;
-  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:600,system:"Output ONLY compact single-line JSON. No unescaped double-quotes inside string values.",messages:[{role:"user",content:p}]});
+Prompt: "${prompt}"
+Entry: "${entry}"
+
+Reply ONLY with raw JSON. No markdown. No unescaped double-quote characters inside strings — use single quotes instead.
+{
+  "score": 7,
+  "correctedSentence": "fully corrected version of their entry",
+  "grammarErrors": [{"error": "bad phrase", "correction": "good phrase", "rule": "quy tac ngu phap bang tieng Viet"}],
+  "styleAdvice": "loi khuyen van phong bang tieng Viet, 1-2 cau",
+  "lessons": [
+    {"title": "Ten bai hoc tieng Viet", "explanation": "Giai thich ngan bang tieng Viet", "example": "An example sentence."}
+  ],
+  "encouragement": "1 cau dong vien bang tieng Viet"
+}
+Rules: grammarErrors can be empty []. lessons: 1-2 items focused on most important issues.`;
+
+  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
+    system:"You are an English writing coach. Output ONLY compact single-line JSON. Never use unescaped double-quote characters inside string values.",
+    messages:[{role:"user",content:p}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  try { return repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
+  let r;
+  try { r = repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
+  // Normalise field names (handle both corrected and correctedSentence)
+  if (!r.correctedSentence && r.corrected) r.correctedSentence = r.corrected;
+  if (!Array.isArray(r.grammarErrors)) r.grammarErrors = [];
+  if (!Array.isArray(r.lessons)) r.lessons = [];
+  r.score = r.score || 5;
+  r.encouragement = r.encouragement || "";
+  return r;
 }
 
 // ─── Journal prompt pool ──────────────────────────────────────────────────
@@ -3632,48 +3654,99 @@ function VocabApp({ apiKey }) {
                   </div>
                 ) : (
                   <div className="fade-in">
-                    {/* Score */}
-                    <div style={{display:"flex",alignItems:"center",gap:".9rem",background:"rgba(0,0,0,.3)",border:`1.5px solid ${journalResult.score>=7?"rgba(74,222,128,.3)":"rgba(251,191,36,.3)"}`,borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem"}}>
-                      <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2rem",fontWeight:900,color:journalResult.score>=7?"#4ade80":"#fbbf24",lineHeight:1}}>
-                        {journalResult.score}<span style={{fontSize:".65rem",color:"#5a4a6a"}}>/10</span>
+                    {/* Score + encouragement — same as Writing */}
+                    <div style={{display:"flex",alignItems:"center",gap:".9rem",background:"rgba(0,0,0,.3)",border:`2px solid ${(journalResult.score||5)>=7?"rgba(74,222,128,.3)":"rgba(251,191,36,.3)"}`,borderRadius:18,padding:"1rem 1.2rem",marginBottom:"1rem"}}>
+                      <div style={{textAlign:"center",minWidth:64}}>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2.2rem",fontWeight:900,color:(journalResult.score||5)>=7?"#4ade80":(journalResult.score||5)>=5?"#fbbf24":"#f87171",lineHeight:1}}>{journalResult.score||5}</div>
+                        <div style={{fontSize:".6rem",color:"#5a4a6a"}}>/10</div>
                       </div>
-                      <div style={{flex:1,fontSize:".85rem",fontFamily:"'Crimson Pro',serif",color:"#a09080",fontStyle:"italic"}}>{journalResult.encouragement}</div>
+                      <div style={{flex:1}}>
+                        <div style={{fontSize:".82rem",color:"#a09080",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>{journalResult.encouragement}</div>
+                      </div>
                     </div>
 
-                    {/* Corrected */}
-                    <div className="journal-card" style={{borderColor:"rgba(74,222,128,.2)"}}>
-                      <div style={{fontSize:".65rem",color:"#4ade80",letterSpacing:".08em",marginBottom:".4rem"}}>✅ PHIÊN BẢN ĐÃ SỬA</div>
-                      <div style={{fontSize:".92rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0",lineHeight:1.7,marginBottom:".4rem"}}>{journalResult.corrected}</div>
-                      <button className="spkbtn btn" onClick={()=>speak(journalResult.corrected,0.82)}>🔊 Nghe</button>
+                    {/* Original vs Corrected — 2 column like Writing */}
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".7rem",marginBottom:"1rem"}}>
+                      <div style={{background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.15)",borderRadius:14,padding:".9rem"}}>
+                        <div style={{fontSize:".65rem",color:"#f87171",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem"}}>✏️ Bài của bạn</div>
+                        <div style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0",lineHeight:1.6}}>{journalInput}</div>
+                      </div>
+                      <div style={{background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.15)",borderRadius:14,padding:".9rem"}}>
+                        <div style={{fontSize:".65rem",color:"#4ade80",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                          <span>✅ Đã sửa</span>
+                          <button className="spkbtn btn" style={{fontSize:".62rem",padding:".12rem .45rem"}} onClick={()=>speak(journalResult.correctedSentence||journalResult.corrected||"",0.82)}>🔊</button>
+                        </div>
+                        <div style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0",lineHeight:1.6}}>{journalResult.correctedSentence||journalResult.corrected}</div>
+                      </div>
                     </div>
 
-                    {/* Grammar errors */}
+                    {/* Grammar errors — same style as Writing */}
                     {journalResult.grammarErrors?.length>0 && (
-                      <div className="journal-card" style={{borderColor:"rgba(248,113,113,.18)"}}>
-                        <div style={{fontSize:".65rem",color:"#f87171",letterSpacing:".08em",marginBottom:".5rem"}}>📐 LỖI NGỮ PHÁP</div>
+                      <div className="lesson-card" style={{borderColor:"rgba(248,113,113,.18)",marginBottom:".8rem"}}>
+                        <h4 style={{color:"#f87171"}}>📐 Lỗi ngữ pháp ({journalResult.grammarErrors.length})</h4>
                         {journalResult.grammarErrors.map((e,i)=>(
-                          <div key={i} style={{marginBottom:".5rem"}}>
-                            <span style={{background:"rgba(248,113,113,.15)",borderRadius:6,padding:".1rem .5rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".88rem",textDecoration:"line-through"}}>{e.error}</span>
-                            <span style={{color:"#5a4a6a",margin:"0 .4rem"}}>→</span>
-                            <span style={{background:"rgba(74,222,128,.15)",borderRadius:6,padding:".1rem .5rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontSize:".88rem"}}>{e.fix}</span>
-                            {e.rule&&<div style={{fontSize:".75rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",marginTop:".2rem",fontStyle:"italic"}}>📌 {e.rule}</div>}
+                          <div key={i} style={{display:"flex",alignItems:"center",gap:".6rem",marginBottom:".5rem",paddingBottom:i<journalResult.grammarErrors.length-1?".5rem":0,borderBottom:i<journalResult.grammarErrors.length-1?"1px solid rgba(255,255,255,.05)":"none",flexWrap:"wrap"}}>
+                            <span style={{background:"rgba(248,113,113,.15)",borderRadius:6,padding:".15rem .6rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",textDecoration:"line-through",fontSize:".9rem"}}>{e.error}</span>
+                            <span style={{color:"#5a4a6a"}}>→</span>
+                            <span style={{background:"rgba(74,222,128,.15)",borderRadius:6,padding:".15rem .6rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:600,fontSize:".9rem"}}>{e.correction||e.fix}</span>
+                            {(e.rule)&&<div style={{width:"100%",fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>📌 {e.rule}</div>}
                           </div>
                         ))}
                       </div>
                     )}
 
-                    {/* Style note */}
-                    {journalResult.styleNote && (
-                      <div className="journal-card" style={{borderColor:"rgba(96,165,250,.18)"}}>
-                        <div style={{fontSize:".65rem",color:"#60a5fa",letterSpacing:".08em",marginBottom:".3rem"}}>💡 VĂN PHONG</div>
-                        <div style={{fontSize:".88rem",color:"#a0b8d0",fontFamily:"'Crimson Pro',serif"}}>{journalResult.styleNote}</div>
+                    {/* Style advice */}
+                    {(journalResult.styleAdvice||journalResult.styleNote) && (
+                      <div className="lesson-card" style={{borderColor:"rgba(96,165,250,.18)",marginBottom:".8rem"}}>
+                        <h4 style={{color:"#60a5fa"}}>💡 Lời khuyên về văn phong</h4>
+                        <div style={{fontSize:".9rem",color:"#a0b8d0",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>{journalResult.styleAdvice||journalResult.styleNote}</div>
                       </div>
                     )}
 
-                    <button className="btn" onClick={()=>{setJournalInput("");setJournalResult(null);setJournalPrompt(JOURNAL_PROMPTS[Math.floor(Math.random()*JOURNAL_PROMPTS.length)]);}}
-                      style={{width:"100%",padding:".85rem",borderRadius:14,background:"linear-gradient(135deg,#a78bfa,#f472b6)",color:"white",border:"none",fontWeight:700,fontSize:".98rem"}}>
-                      ✍️ Viết thêm
-                    </button>
+                    {/* Lessons — with save button, same as Writing */}
+                    {journalResult.lessons?.length>0 && (
+                      <div style={{marginBottom:"1rem"}}>
+                        <div style={{fontSize:".7rem",color:"#6a5a7a",letterSpacing:".1em",textTransform:"uppercase",marginBottom:".6rem"}}>📚 Bài học từ nhật ký này</div>
+                        {journalResult.lessons.map((lesson,i)=>{
+                          const alreadySaved = savedLessons.some(l=>l.title===lesson.title);
+                          return (
+                            <div key={i} className="lesson-card" style={{borderColor:alreadySaved?"rgba(74,222,128,.25)":"rgba(167,139,250,.18)"}}>
+                              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:".5rem",marginBottom:".35rem"}}>
+                                <h4 style={{color:alreadySaved?"#4ade80":"#c4b5fd",flex:1}}>📖 {lesson.title}</h4>
+                                <button className="btn" onClick={()=>{
+                                  if(alreadySaved) return;
+                                  setSavedLessons(prev=>[{...lesson,word:"(nhật ký)",savedAt:Date.now()},...prev]);
+                                }} style={{padding:".2rem .6rem",borderRadius:8,fontSize:".72rem",fontWeight:700,
+                                  background:alreadySaved?"rgba(74,222,128,.12)":"rgba(167,139,250,.15)",
+                                  border:`1px solid ${alreadySaved?"rgba(74,222,128,.3)":"rgba(167,139,250,.3)"}`,
+                                  color:alreadySaved?"#4ade80":"#c4b5fd",cursor:alreadySaved?"default":"pointer",whiteSpace:"nowrap"}}>
+                                  {alreadySaved?"✓ Đã lưu":"💾 Lưu lại"}
+                                </button>
+                              </div>
+                              <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
+                              {lesson.example&&(
+                                <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .7rem"}}>
+                                  <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
+                                  <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    <div style={{display:"flex",gap:".7rem"}}>
+                      <button className="btn" onClick={()=>{setJournalInput("");setJournalResult(null);}}
+                        style={{flex:1,padding:".85rem",borderRadius:14,background:"rgba(167,139,250,.12)",border:"1.5px solid rgba(167,139,250,.25)",color:"#c4b5fd",fontWeight:700,fontSize:".95rem"}}>
+                        ✏️ Viết lại
+                      </button>
+                      <button className="btn" onClick={()=>{setJournalInput("");setJournalResult(null);setJournalPrompt(JOURNAL_PROMPTS[Math.floor(Math.random()*JOURNAL_PROMPTS.length)]);}}
+                        style={{flex:1,padding:".85rem",borderRadius:14,background:"linear-gradient(135deg,#a78bfa,#f472b6)",color:"white",border:"none",fontWeight:700,fontSize:".95rem"}}>
+                        📔 Bài mới
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
