@@ -3130,20 +3130,21 @@ function VocabApp({ apiKey }) {
                   {pool.map((_,i)=><div key={i} style={{flex:1,height:3,borderRadius:2,background:i<rewriteIdx?"#4ade80":i===rewriteIdx?"#fbbf24":"rgba(255,255,255,.08)",transition:"background .3s"}}/>)}
                 </div>
 
-                {/* Error card */}
+                {/* Error card — chỉ hiện lỗi, ẩn đáp án */}
                 <div style={{background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.18)",borderRadius:18,padding:"1.2rem",marginBottom:"1rem"}}>
                   <div style={{fontSize:".68rem",color:"#f87171",letterSpacing:".1em",textTransform:"uppercase",marginBottom:".6rem"}}>LỖI CẦN SỬA</div>
 
-                  {/* Error → correction display */}
+                  {/* Chỉ hiện từ sai — không hiện đáp án */}
                   <div style={{display:"flex",alignItems:"center",gap:".7rem",flexWrap:"wrap",marginBottom:".6rem"}}>
                     <span style={{background:"rgba(248,113,113,.18)",borderRadius:8,padding:".2rem .75rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:"1rem",textDecoration:"line-through"}}>{cur.error}</span>
                     <span style={{color:"#5a4a6a",fontSize:"1.1rem"}}>→</span>
-                    <span style={{background:"rgba(74,222,128,.18)",borderRadius:8,padding:".2rem .75rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontSize:"1rem",fontWeight:700}}>{cur.correction}</span>
+                    <span style={{background:"rgba(255,255,255,.06)",borderRadius:8,padding:".2rem .75rem",color:"#4a3a5a",fontFamily:"'Crimson Pro',serif",fontSize:"1rem",letterSpacing:".15em"}}>{"?".repeat(Math.min(cur.correction.length, 8))}</span>
                   </div>
 
+                  {/* Quy tắc ngữ pháp — gợi ý không lộ đáp án */}
                   {cur.rule&&<div style={{fontSize:".8rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".5rem"}}>📌 {cur.rule}</div>}
 
-                  {/* Original sentence for context */}
+                  {/* Câu gốc để có ngữ cảnh */}
                   {cur.original&&(
                     <div style={{fontSize:".8rem",color:"#4a3a5a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",borderLeft:"2px solid rgba(248,113,113,.25)",paddingLeft:".7rem"}}>
                       Câu gốc: "{cur.original.slice(0,120)}{cur.original.length>120?"...":""}"
@@ -3151,9 +3152,9 @@ function VocabApp({ apiKey }) {
                   )}
                 </div>
 
-                {/* Task */}
+                {/* Task — không gợi ý đáp án */}
                 <div style={{background:"rgba(167,139,250,.07)",border:"1px solid rgba(167,139,250,.18)",borderRadius:14,padding:".8rem 1rem",marginBottom:".8rem",fontSize:".9rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif",lineHeight:1.6}}>
-                  ✍️ Viết lại câu gốc, sửa lỗi <b style={{color:"#f87171"}}>"{cur.error}"</b> thành <b style={{color:"#4ade80"}}>"{cur.correction}"</b>
+                  ✍️ Viết lại câu trên và sửa lỗi <b style={{color:"#f87171"}}>"{cur.error}"</b> cho đúng
                 </div>
 
                 {!rewriteChecked ? (
@@ -4124,6 +4125,11 @@ function VocabApp({ apiKey }) {
 
           const markReviewed = (id) => setErrorBank(prev=>prev.map(e=>e.id===id?{...e,reviewed:true}:e));
           const deleteError  = (id) => setErrorBank(prev=>prev.filter(e=>e.id!==id));
+          const [ebPractice, setEbPractice] = React.useState({}); // {id: {input, checked}}
+          const getEB = (id) => ebPractice[id] || {input:"", checked:false};
+          const setEBInput = (id, val) => setEbPractice(p=>({...p,[id]:{...getEB(id),input:val,checked:false}}));
+          const checkEB = (id) => setEbPractice(p=>({...p,[id]:{...getEB(id),checked:true}}));
+          const normalize = s => s.trim().toLowerCase().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
 
           return (
             <div>
@@ -4154,37 +4160,88 @@ function VocabApp({ apiKey }) {
                       <div style={{fontSize:".7rem",color:"#f87171",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".6rem"}}>
                         ❌ Cần ôn lại ({unreviewed.length})
                       </div>
-                      {unreviewed.map((e)=>(
-                        <div key={e.id} className="error-card">
-                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:".5rem",marginBottom:".5rem"}}>
-                            <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
-                              <span style={{fontSize:".65rem",padding:"1px 8px",borderRadius:999,background:sourceColor(e.source)+"20",color:sourceColor(e.source),border:`1px solid ${sourceColor(e.source)}35`}}>{sourceLabel(e.source)}</span>
-                              <span style={{fontSize:".65rem",padding:"1px 8px",borderRadius:999,background:"rgba(248,113,113,.12)",color:"#fca5a5",border:"1px solid rgba(248,113,113,.2)"}}>
-                                {e.type==="grammar"?"📐 Ngữ pháp":"🔤 Chính tả"}
-                              </span>
-                              {e.word&&<span style={{fontSize:".65rem",color:"#5a4a6a",fontStyle:"italic"}}>từ: {e.word}</span>}
+                      {unreviewed.map((e)=>{
+                        const eb = getEB(e.id);
+                        const isOk = eb.checked && normalize(eb.input).includes(normalize(e.correction)) && !normalize(eb.input).includes(normalize(e.error));
+                        const isFail = eb.checked && !isOk;
+                        return (
+                          <div key={e.id} className="error-card" style={{borderColor:eb.checked?(isOk?"rgba(74,222,128,.3)":"rgba(248,113,113,.3)"):"rgba(248,113,113,.15)"}}>
+                            {/* Header badges */}
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:".5rem",marginBottom:".6rem"}}>
+                              <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                                <span style={{fontSize:".65rem",padding:"1px 8px",borderRadius:999,background:sourceColor(e.source)+"20",color:sourceColor(e.source),border:`1px solid ${sourceColor(e.source)}35`}}>{sourceLabel(e.source)}</span>
+                                <span style={{fontSize:".65rem",padding:"1px 8px",borderRadius:999,background:"rgba(248,113,113,.12)",color:"#fca5a5",border:"1px solid rgba(248,113,113,.2)"}}>
+                                  {e.type==="grammar"?"📐 Ngữ pháp":"🔤 Chính tả"}
+                                </span>
+                                {e.word&&<span style={{fontSize:".65rem",color:"#5a4a6a",fontStyle:"italic"}}>từ: {e.word}</span>}
+                              </div>
+                              <button className="btn" onClick={()=>deleteError(e.id)}
+                                style={{padding:".18rem .5rem",borderRadius:6,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#4a3a5a",fontSize:".7rem"}}>✕</button>
                             </div>
-                            <button className="btn" onClick={()=>deleteError(e.id)}
-                              style={{padding:".18rem .5rem",borderRadius:6,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#4a3a5a",fontSize:".7rem"}}>✕</button>
-                          </div>
-                          {/* Error → correction */}
-                          <div style={{display:"flex",alignItems:"center",gap:".6rem",flexWrap:"wrap",marginBottom:".35rem"}}>
-                            <span style={{background:"rgba(248,113,113,.15)",borderRadius:6,padding:".15rem .65rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".92rem",textDecoration:"line-through"}}>{e.error}</span>
-                            <span style={{color:"#5a4a6a"}}>→</span>
-                            <span style={{background:"rgba(74,222,128,.15)",borderRadius:6,padding:".15rem .65rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:700,fontSize:".92rem"}}>{e.correction}</span>
-                          </div>
-                          {e.rule&&<div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".35rem"}}>📌 {e.rule}</div>}
-                          {e.original&&(
-                            <div style={{fontSize:".78rem",color:"#4a3a5a",fontFamily:"'Crimson Pro',serif",marginBottom:".45rem",fontStyle:"italic",borderLeft:"2px solid rgba(248,113,113,.2)",paddingLeft:".6rem"}}>
-                              "{e.original.slice(0,100)}{e.original.length>100?"...":""}"
+
+                            {/* Error (ẩn đáp án) */}
+                            <div style={{display:"flex",alignItems:"center",gap:".6rem",flexWrap:"wrap",marginBottom:".35rem"}}>
+                              <span style={{background:"rgba(248,113,113,.15)",borderRadius:6,padding:".15rem .65rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".92rem",textDecoration:"line-through"}}>{e.error}</span>
+                              <span style={{color:"#5a4a6a"}}>→</span>
+                              {eb.checked ? (
+                                <span style={{background:"rgba(74,222,128,.18)",borderRadius:6,padding:".15rem .65rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:700,fontSize:".92rem"}}>{e.correction}</span>
+                              ) : (
+                                <span style={{background:"rgba(255,255,255,.05)",borderRadius:6,padding:".15rem .75rem",color:"#3a2a4a",fontFamily:"monospace",fontSize:".85rem",letterSpacing:".1em"}}>{"?".repeat(Math.min(e.correction.length,8))}</span>
+                              )}
                             </div>
-                          )}
-                          <button className="btn" onClick={()=>markReviewed(e.id)}
-                            style={{padding:".28rem .8rem",borderRadius:8,background:"rgba(74,222,128,.1)",border:"1px solid rgba(74,222,128,.2)",color:"#86efac",fontSize:".75rem",fontWeight:600}}>
-                            ✓ Đánh dấu đã ôn
-                          </button>
-                        </div>
-                      ))}
+
+                            {e.rule&&<div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".4rem"}}>📌 {e.rule}</div>}
+
+                            {/* Câu gốc */}
+                            {e.original&&(
+                              <div style={{fontSize:".78rem",color:"#4a3a5a",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem",fontStyle:"italic",borderLeft:"2px solid rgba(248,113,113,.2)",paddingLeft:".6rem"}}>
+                                "{e.original.slice(0,100)}{e.original.length>100?"...":""}"
+                              </div>
+                            )}
+
+                            {/* Input hoặc kết quả */}
+                            {!eb.checked ? (
+                              <div>
+                                <textarea
+                                  className="writing-area"
+                                  rows={2}
+                                  placeholder="Viết lại câu đã sửa lỗi..."
+                                  value={eb.input}
+                                  onChange={ev=>setEBInput(e.id, ev.target.value)}
+                                  onKeyDown={ev=>{if(ev.key==="Enter"&&ev.ctrlKey&&eb.input.trim()) checkEB(e.id);}}
+                                  style={{fontSize:".88rem",minHeight:60,marginBottom:".4rem"}}
+                                />
+                                <div style={{display:"flex",gap:".5rem"}}>
+                                  <button className="btn" onClick={()=>checkEB(e.id)} disabled={!eb.input.trim()}
+                                    style={{flex:1,padding:".55rem",borderRadius:10,background:"linear-gradient(135deg,#f472b6,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:".85rem",opacity:!eb.input.trim()?0.5:1}}>
+                                    ✅ Kiểm tra
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div className="fade-in">
+                                {/* Kết quả */}
+                                <div style={{display:"flex",alignItems:"center",gap:".6rem",padding:".5rem .8rem",borderRadius:10,marginBottom:".5rem",
+                                  background:isOk?"rgba(74,222,128,.1)":"rgba(248,113,113,.08)",
+                                  border:`1px solid ${isOk?"rgba(74,222,128,.2)":"rgba(248,113,113,.18)"}`}}>
+                                  <span style={{fontSize:"1.1rem"}}>{isOk?"✅":"❌"}</span>
+                                  <span style={{fontFamily:"'Crimson Pro',serif",fontSize:".88rem",color:isOk?"#86efac":"#fca5a5",fontStyle:"italic"}}>"{eb.input}"</span>
+                                </div>
+                                <div style={{display:"flex",gap:".5rem"}}>
+                                  <button className="btn" onClick={()=>setEbPractice(p=>({...p,[e.id]:{input:"",checked:false}}))}
+                                    style={{flex:1,padding:".5rem",borderRadius:10,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#7a6a8a",fontSize:".82rem"}}>
+                                    ✏️ Thử lại
+                                  </button>
+                                  <button className="btn" onClick={()=>{ markReviewed(e.id); setEbPractice(p=>({...p,[e.id]:{input:"",checked:false}})); }}
+                                    style={{flex:1,padding:".5rem",borderRadius:10,background:"rgba(74,222,128,.1)",border:"1px solid rgba(74,222,128,.2)",color:"#86efac",fontWeight:700,fontSize:".82rem"}}>
+                                    ✓ Đã ôn xong
+                                  </button>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </>
                   )}
 
