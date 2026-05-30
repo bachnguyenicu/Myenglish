@@ -396,7 +396,7 @@ JSON structure:
 {"overallScore":7,"wordUsed":true,"wordUsedCorrectly":true,"correctedSentence":"the corrected sentence","spellingErrors":[{"wrong":"wrng","correct":"wrong","tip":"spelling tip"}],"grammarErrors":[{"error":"bad form","correction":"good form","rule":"quy tac bang tieng Viet"}],"styleAdvice":"loi khuyen van phong bang tieng Viet","lessons":[{"title":"Ten bai hoc","explanation":"Giai thich bang tieng Viet, khong dung dau ngoac kep","example":"An example sentence."}],"encouragement":"Loi dong vien bang tieng Viet."}`;
 
   const data = await anthropicFetch(apiKey, {
-    model: "claude-sonnet-4-5",
+    model: "claude-haiku-4-5-20251001",
     max_tokens: 1500,
     system: "You are an English writing coach. Output ONLY a single-line compact JSON object. Never put double-quote characters inside JSON string values — use single quotes or reword instead. Never add markdown.",
     messages: [{ role: "user", content: prompt }]
