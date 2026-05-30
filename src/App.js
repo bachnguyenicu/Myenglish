@@ -698,6 +698,7 @@ function VocabApp({ apiKey }) {
   const [rewriteInput, setRewriteInput] = useState("");
   const [rewriteChecked, setRewriteChecked] = useState(false);
   const [rewriteScore, setRewriteScore] = useState({ correct:0, total:0 });
+  const [ebPractice, setEbPractice] = useState({}); // Error Bank practice: {id: {input, checked}}
   // Daily Challenge
   const [dailyProgress, setDailyProgress] = useState(() => loadState("lx_daily", null));
   const [dailyChallenge, setDailyChallenge] = useState(null);
@@ -4125,10 +4126,9 @@ function VocabApp({ apiKey }) {
 
           const markReviewed = (id) => setErrorBank(prev=>prev.map(e=>e.id===id?{...e,reviewed:true}:e));
           const deleteError  = (id) => setErrorBank(prev=>prev.filter(e=>e.id!==id));
-          const [ebPractice, setEbPractice] = React.useState({}); // {id: {input, checked}}
           const getEB = (id) => ebPractice[id] || {input:"", checked:false};
-          const setEBInput = (id, val) => setEbPractice(p=>({...p,[id]:{...getEB(id),input:val,checked:false}}));
-          const checkEB = (id) => setEbPractice(p=>({...p,[id]:{...getEB(id),checked:true}}));
+          const setEBInput = (id, val) => setEbPractice(p=>({...p,[id]:{...p[id]||{input:"",checked:false},input:val,checked:false}}));
+          const checkEB = (id) => setEbPractice(p=>({...p,[id]:{...p[id]||{input:"",checked:false},checked:true}}));
           const normalize = s => s.trim().toLowerCase().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
 
           return (
