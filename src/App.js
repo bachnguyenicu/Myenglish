@@ -3159,23 +3159,108 @@ function VocabApp({ apiKey }) {
                 </div>
               ) : (
                 <div className="fade-in">
-                  {/* Score */}
-                  <div style={{display:"flex",alignItems:"center",gap:".9rem",background:"rgba(0,0,0,.25)",border:`1.5px solid ${dailyWriteResult.overallScore>=7?"rgba(74,222,128,.3)":"rgba(251,191,36,.3)"}`,borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem"}}>
-                    <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2rem",fontWeight:900,color:dailyWriteResult.overallScore>=7?"#4ade80":"#fbbf24",lineHeight:1}}>{dailyWriteResult.overallScore}<span style={{fontSize:".7rem",color:"#5a4a6a"}}>/10</span></div>
+                  {/* Score banner */}
+                  <div style={{background:"rgba(0,0,0,.3)",border:`2px solid ${(dailyWriteResult.overallScore||5)>=7?"rgba(74,222,128,.3)":"rgba(251,191,36,.3)"}`,borderRadius:18,padding:"1rem 1.2rem",marginBottom:"1rem",display:"flex",alignItems:"center",gap:"1rem"}}>
+                    <div style={{textAlign:"center",minWidth:64}}>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2.2rem",fontWeight:900,color:(dailyWriteResult.overallScore||5)>=7?"#4ade80":(dailyWriteResult.overallScore||5)>=5?"#fbbf24":"#f87171",lineHeight:1}}>{dailyWriteResult.overallScore||5}</div>
+                      <div style={{fontSize:".6rem",color:"#5a4a6a"}}>/10</div>
+                    </div>
                     <div style={{flex:1}}>
-                      <div style={{fontSize:".9rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0",marginBottom:".2rem",fontStyle:"italic"}}>"{dailyWriteInput}"</div>
-                      <div style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",color:"#86efac",display:"flex",alignItems:"center",gap:".4rem"}}>
-                        ✅ {dailyWriteResult.correctedSentence}
-                        <button className="spkbtn btn" style={{fontSize:".62rem",padding:".1rem .4rem"}} onClick={()=>speak(dailyWriteResult.correctedSentence,0.82)}>🔊</button>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:".95rem",color:(dailyWriteResult.overallScore||5)>=7?"#4ade80":"#fbbf24"}}>
+                        {(dailyWriteResult.overallScore||5)>=9?"Xuất sắc 🌟":(dailyWriteResult.overallScore||5)>=7?"Tốt 👍":(dailyWriteResult.overallScore||5)>=5?"Khá 💪":"Cần cải thiện 📚"}
                       </div>
+                      <div style={{fontSize:".82rem",color:"#a09080",fontFamily:"'Crimson Pro',serif",marginTop:".15rem",fontStyle:"italic"}}>{dailyWriteResult.encouragement}</div>
                     </div>
                   </div>
-                  {/* Grammar errors */}
-                  {dailyWriteResult.grammarErrors?.length>0 && (
-                    <div style={{fontSize:".82rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",padding:".6rem .9rem",background:"rgba(248,113,113,.07)",borderRadius:10,marginBottom:".7rem"}}>
-                      {dailyWriteResult.grammarErrors.map((e,i)=><div key={i}>📐 {e.rule}</div>)}
+
+                  {/* 2-column original vs corrected */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".7rem",marginBottom:"1rem"}}>
+                    <div style={{background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.15)",borderRadius:14,padding:".9rem"}}>
+                      <div style={{fontSize:".65rem",color:"#f87171",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem"}}>✏️ Câu của bạn</div>
+                      <div style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0",lineHeight:1.6}}>{dailyWriteInput}</div>
+                    </div>
+                    <div style={{background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.15)",borderRadius:14,padding:".9rem"}}>
+                      <div style={{fontSize:".65rem",color:"#4ade80",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                        <span>✅ Đã sửa</span>
+                        <button className="spkbtn btn" style={{fontSize:".62rem",padding:".12rem .45rem"}} onClick={()=>speak(dailyWriteResult.correctedSentence||"",0.82)}>🔊</button>
+                      </div>
+                      <div style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0",lineHeight:1.6}}>{dailyWriteResult.correctedSentence}</div>
+                    </div>
+                  </div>
+
+                  {/* Spelling errors */}
+                  {dailyWriteResult.spellingErrors?.length>0 && (
+                    <div className="lesson-card" style={{borderColor:"rgba(251,191,36,.18)",marginBottom:".8rem"}}>
+                      <h4 style={{color:"#fbbf24"}}>🔤 Lỗi chính tả ({dailyWriteResult.spellingErrors.length})</h4>
+                      {dailyWriteResult.spellingErrors.map((e,i)=>(
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:".6rem",marginBottom:".4rem",flexWrap:"wrap"}}>
+                          <span style={{background:"rgba(248,113,113,.15)",borderRadius:6,padding:".1rem .5rem",color:"#f87171",fontFamily:"'Crimson Pro',serif",textDecoration:"line-through"}}>{e.wrong}</span>
+                          <span style={{color:"#5a4a6a"}}>→</span>
+                          <span style={{background:"rgba(74,222,128,.15)",borderRadius:6,padding:".1rem .5rem",color:"#4ade80",fontFamily:"'Crimson Pro',serif",fontWeight:700}}>{e.correct}</span>
+                          {e.tip&&<span style={{fontSize:".75rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>({e.tip})</span>}
+                        </div>
+                      ))}
                     </div>
                   )}
+
+                  {/* Grammar errors */}
+                  {dailyWriteResult.grammarErrors?.length>0 && (
+                    <div className="lesson-card" style={{borderColor:"rgba(248,113,113,.18)",marginBottom:".8rem"}}>
+                      <h4 style={{color:"#f87171"}}>📐 Lỗi ngữ pháp ({dailyWriteResult.grammarErrors.length})</h4>
+                      {dailyWriteResult.grammarErrors.map((e,i)=>(
+                        <div key={i} style={{marginBottom:".6rem",paddingBottom:i<dailyWriteResult.grammarErrors.length-1?".6rem":0,borderBottom:i<dailyWriteResult.grammarErrors.length-1?"1px solid rgba(255,255,255,.05)":"none"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:".6rem",flexWrap:"wrap",marginBottom:".25rem"}}>
+                            <span style={{background:"rgba(248,113,113,.15)",borderRadius:6,padding:".15rem .6rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".9rem"}}>{e.error}</span>
+                            <span style={{color:"#5a4a6a"}}>→</span>
+                            <span style={{background:"rgba(74,222,128,.15)",borderRadius:6,padding:".15rem .6rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:600,fontSize:".9rem"}}>{e.correction}</span>
+                          </div>
+                          {e.rule&&<div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>📌 {e.rule}</div>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Style advice */}
+                  {dailyWriteResult.styleAdvice && (
+                    <div className="lesson-card" style={{borderColor:"rgba(96,165,250,.18)",marginBottom:".8rem"}}>
+                      <h4 style={{color:"#60a5fa"}}>💡 Lời khuyên văn phong</h4>
+                      <div style={{fontSize:".9rem",color:"#a0b8d0",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>{dailyWriteResult.styleAdvice}</div>
+                    </div>
+                  )}
+
+                  {/* Lessons with save button */}
+                  {dailyWriteResult.lessons?.length>0 && (
+                    <div style={{marginBottom:"1rem"}}>
+                      <div style={{fontSize:".7rem",color:"#6a5a7a",letterSpacing:".1em",textTransform:"uppercase",marginBottom:".6rem"}}>📚 Bài học từ câu này</div>
+                      {dailyWriteResult.lessons.map((lesson,i)=>{
+                        const alreadySaved = savedLessons.some(l=>l.title===lesson.title);
+                        return (
+                          <div key={i} className="lesson-card" style={{borderColor:alreadySaved?"rgba(74,222,128,.25)":"rgba(167,139,250,.18)"}}>
+                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:".5rem",marginBottom:".35rem"}}>
+                              <h4 style={{color:alreadySaved?"#4ade80":"#c4b5fd",flex:1}}>📖 {lesson.title}</h4>
+                              <button className="btn" onClick={()=>{
+                                if(alreadySaved) return;
+                                setSavedLessons(prev=>[{...lesson,word:c.focusWord,savedAt:Date.now()},...prev]);
+                              }} style={{padding:".2rem .6rem",borderRadius:8,fontSize:".72rem",fontWeight:700,
+                                background:alreadySaved?"rgba(74,222,128,.12)":"rgba(167,139,250,.15)",
+                                border:`1px solid ${alreadySaved?"rgba(74,222,128,.3)":"rgba(167,139,250,.3)"}`,
+                                color:alreadySaved?"#4ade80":"#c4b5fd",cursor:alreadySaved?"default":"pointer",whiteSpace:"nowrap"}}>
+                                {alreadySaved?"✓ Đã lưu":"💾 Lưu lại"}
+                              </button>
+                            </div>
+                            <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
+                            {lesson.example&&(
+                              <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .7rem"}}>
+                                <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
+                                <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
                   <button className="btn" onClick={()=>setDailyStep(3)}
                     style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
                     Tiếp theo: Luyện nói 🎤
