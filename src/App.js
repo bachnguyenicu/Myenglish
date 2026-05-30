@@ -697,6 +697,8 @@ function VocabApp({ apiKey }) {
   const [dailyStep, setDailyStep]   = useState(0);   // 0=intro,1=listen,2=write,3=speak,4=done
   const [dailyLoading, setDailyLoading] = useState(false);
   const [dailyListened, setDailyListened] = useState(false);
+  const [dailyDictInput, setDailyDictInput] = useState("");
+  const [dailyDictChecked, setDailyDictChecked] = useState(false);
   const [dailyWriteInput, setDailyWriteInput] = useState("");
   const [dailyWriteResult, setDailyWriteResult] = useState(null);
   const [dailyWriteLoading, setDailyWriteLoading] = useState(false);
@@ -3031,40 +3033,104 @@ function VocabApp({ apiKey }) {
             </div>
           );
 
-          // ── STEP 1: LISTEN ─────────────────────────────────────────────
-          if (dailyStep===1) return (
-            <div>
-              <ProgressBar/>
-              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem",fontWeight:700,color:"#fde68a",marginBottom:".6rem"}}>🎧 Nhiệm vụ 1: Nghe câu</div>
-              <WordCard/>
-              <div style={{background:"linear-gradient(145deg,#1a1030,#0e1a2e)",border:"1px solid rgba(96,165,250,.2)",borderRadius:18,padding:"1.4rem",textAlign:"center",marginBottom:"1rem"}}>
-                <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".1em",marginBottom:".8rem"}}>NGHE CÂU VÀ GHI NHỚ</div>
-                <button className={`mic-btn btn ${dailyListened?"idle":""}`} onClick={()=>{setDailyListened(true);speak(c.listenSentence,0.78);}}>
-                  {dailyListened?"🔊":"▶️"}
-                </button>
-                <div style={{fontSize:".78rem",color:"#5a4a6a",marginTop:".6rem",fontFamily:"'Crimson Pro',serif"}}>{dailyListened?"Nhấn để nghe lại":"Nhấn để nghe câu"}</div>
-                {dailyListened && (
-                  <div className="fade-in" style={{marginTop:"1rem"}}>
-                    <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginBottom:"1rem"}}>
-                      {[[0.55,"🐢"],[0.78,"▶"],[1.0,"🐇"]].map(([r,l])=>(
+          // ── STEP 1: DICTATION ─────────────────────────────────────────
+          if (dailyStep===1) {
+            const normalize = s => s.trim().toLowerCase().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
+            const dictWords = (spoken, target) => {
+              const sw = normalize(spoken).split(" ");
+              const tw = normalize(target).split(" ");
+              return tw.map((tw, i) => {
+                const aw = sw[i] || "";
+                if (aw === tw) return { word: tw, status: "ok" };
+                if (!aw) return { word: tw, status: "miss" };
+                return { word: tw, answer: aw, status: "bad" };
+              });
+            };
+            const isCorrect = dailyDictChecked &&
+              normalize(dailyDictInput) === normalize(c.listenSentence);
+
+            return (
+              <div>
+                <ProgressBar/>
+                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem",fontWeight:700,color:"#fde68a",marginBottom:".6rem"}}>🎧 Nhiệm vụ 1: Nghe & Chép</div>
+                <WordCard/>
+
+                {/* Player */}
+                <div style={{background:"linear-gradient(145deg,#1a1030,#0e1a2e)",border:"1px solid rgba(96,165,250,.2)",borderRadius:18,padding:"1.4rem",textAlign:"center",marginBottom:"1rem"}}>
+                  <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".1em",marginBottom:".8rem"}}>NGHE RỒI GÕ LẠI CÂU BẠN NGHE ĐƯỢC</div>
+                  <button className="mic-btn btn idle" onClick={()=>{setDailyListened(true);speak(c.listenSentence,0.78);}}>
+                    {dailyListened?"🔊":"▶️"}
+                  </button>
+                  <div style={{fontSize:".78rem",color:"#5a4a6a",marginTop:".6rem",fontFamily:"'Crimson Pro',serif"}}>
+                    {dailyListened?"Nhấn để nghe lại":"Nhấn ▶️ để nghe câu"}
+                  </div>
+                  {dailyListened && (
+                    <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginTop:".7rem"}}>
+                      {[[0.55,"🐢 Chậm"],[0.78,"▶ Chuẩn"],[1.0,"🐇 Nhanh"]].map(([r,l])=>(
                         <button key={r} className="btn" onClick={()=>speak(c.listenSentence,r)}
-                          style={{padding:".28rem .7rem",borderRadius:999,background:"rgba(96,165,250,.1)",border:"1px solid rgba(96,165,250,.2)",color:"#93c5fd",fontSize:".75rem"}}>{l}</button>
+                          style={{padding:".28rem .7rem",borderRadius:999,background:"rgba(96,165,250,.1)",border:"1px solid rgba(96,165,250,.2)",color:"#93c5fd",fontSize:".72rem"}}>{l}</button>
                       ))}
                     </div>
-                    <div style={{background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.15)",borderRadius:10,padding:".6rem .9rem",fontSize:".88rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#86efac"}}>
-                      "{c.listenSentence}"
-                    </div>
+                  )}
+                </div>
+
+                {/* Input — only show after first listen */}
+                {dailyListened && !dailyDictChecked && (
+                  <div className="fade-in">
+                    <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".3rem",letterSpacing:".05em"}}>Gõ lại câu bạn vừa nghe</div>
+                    <textarea className="dict-input" rows={3}
+                      placeholder="Gõ lại câu vừa nghe..."
+                      value={dailyDictInput}
+                      onChange={e=>setDailyDictInput(e.target.value)}
+                      onKeyDown={e=>{if(e.key==="Enter"&&e.ctrlKey&&dailyDictInput.trim()) setDailyDictChecked(true);}}
+                      autoFocus
+                    />
+                    <div style={{fontSize:".65rem",color:"#3a2a4a",marginTop:".25rem",marginBottom:".8rem"}}>Ctrl+Enter để kiểm tra</div>
+                    <button className="btn" onClick={()=>setDailyDictChecked(true)}
+                      disabled={!dailyDictInput.trim()}
+                      style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#60a5fa,#818cf8)",color:"white",border:"none",fontWeight:700,fontSize:"1rem",opacity:!dailyDictInput.trim()?0.5:1}}>
+                      ✅ Kiểm tra
+                    </button>
+                  </div>
+                )}
+
+                {/* Result */}
+                {dailyDictChecked && (
+                  <div className="fade-in">
+                    {isCorrect ? (
+                      <div style={{textAlign:"center",padding:".9rem",borderRadius:14,background:"rgba(74,222,128,.1)",border:"1px solid rgba(74,222,128,.2)",marginBottom:"1rem"}}>
+                        <div style={{fontSize:"1.8rem",marginBottom:".2rem"}}>🎉</div>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:"#4ade80"}}>Hoàn hảo! Chính xác 100%</div>
+                      </div>
+                    ) : (
+                      <div style={{marginBottom:"1rem"}}>
+                        <div style={{fontSize:".72rem",color:"#f87171",marginBottom:".5rem"}}>❌ Chưa chính xác — đỏ = sai, vàng = thiếu:</div>
+                        <div style={{background:"rgba(0,0,0,.3)",borderRadius:12,padding:".8rem 1rem",fontFamily:"'Crimson Pro',serif",fontSize:"1rem",lineHeight:2}}>
+                          {dictWords(dailyDictInput, c.listenSentence).map((d,i)=>(
+                            <span key={i} className={`phone-char ${d.status==="ok"?"phone-ok":d.status==="miss"?"phone-miss":"phone-bad"}`}
+                              title={d.status==="bad"?`Bạn gõ: "${d.answer}"`:d.status==="miss"?"Bỏ sót":""}>
+                              {d.word}{" "}
+                            </span>
+                          ))}
+                        </div>
+                        <div style={{marginTop:".6rem",fontSize:".78rem",color:"#5a4a6a",fontFamily:"'Crimson Pro',serif",display:"flex",alignItems:"center",gap:".5rem"}}>
+                          ✅ Đáp án:
+                          <button className="spkbtn btn" onClick={()=>speak(c.listenSentence,0.75)}>🔊 Nghe lại</button>
+                        </div>
+                        <div style={{background:"rgba(74,222,128,.07)",border:"1px solid rgba(74,222,128,.15)",borderRadius:10,padding:".5rem .9rem",marginTop:".4rem",fontSize:".9rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#86efac"}}>
+                          "{c.listenSentence}"
+                        </div>
+                      </div>
+                    )}
+                    <button className="btn" onClick={()=>setDailyStep(2)}
+                      style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                      Tiếp theo: Viết câu ✍️
+                    </button>
                   </div>
                 )}
               </div>
-              {dailyListened && (
-                <button className="btn" onClick={()=>setDailyStep(2)}
-                  style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
-                  Tiếp theo: Viết câu ✍️
-                </button>
-              )}
-            </div>
-          );
+            );
+          }
 
           // ── STEP 2: WRITE ──────────────────────────────────────────────
           if (dailyStep===2) return (
