@@ -122,7 +122,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { DAILY:"daily", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
+const MODES = { DAILY:"daily", ERRORS:"errors", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 function getBestVoice(voices) {
@@ -691,6 +691,13 @@ function VocabApp({ apiKey }) {
   const [writingLoading, setWritingLoading] = useState(false);
   const [writingHistory, setWritingHistory] = useState([]);
   const [savedLessons, setSavedLessons] = useState(() => loadState("lx_grammar_lessons", []));
+  // Error Bank
+  const [errorBank, setErrorBank] = useState(() => loadState("lx_errors", []));
+  // Daily rewrite challenge
+  const [rewriteIdx, setRewriteIdx] = useState(0);
+  const [rewriteInput, setRewriteInput] = useState("");
+  const [rewriteChecked, setRewriteChecked] = useState(false);
+  const [rewriteScore, setRewriteScore] = useState({ correct:0, total:0 });
   // Daily Challenge
   const [dailyProgress, setDailyProgress] = useState(() => loadState("lx_daily", null));
   const [dailyChallenge, setDailyChallenge] = useState(null);
@@ -818,6 +825,7 @@ function VocabApp({ apiKey }) {
   useEffect(() => { try { localStorage.setItem("lx_known", JSON.stringify(knownArr)); } catch {} }, [knownArr]);
   useEffect(() => { try { localStorage.setItem("lx_learning", JSON.stringify(learningArr)); } catch {} }, [learningArr]);
   useEffect(() => { try { localStorage.setItem("lx_grammar_lessons", JSON.stringify(savedLessons)); } catch {} }, [savedLessons]);
+  useEffect(() => { try { localStorage.setItem("lx_errors", JSON.stringify(errorBank)); } catch {} }, [errorBank]);
   useEffect(() => { try { localStorage.setItem("lx_daily", JSON.stringify(dailyProgress)); } catch {} }, [dailyProgress]);
   useEffect(() => { try { localStorage.setItem("lx_journal", JSON.stringify(journalEntries)); } catch {} }, [journalEntries]);
 
@@ -828,6 +836,45 @@ function VocabApp({ apiKey }) {
 
   useEffect(() => { setCardIdx(0); setFlipped(false); }, [levelFilter]);
   useEffect(() => { window.speechSynthesis?.getVoices(); }, []);
+
+
+  // Save errors from AI writing result to errorBank
+  const saveErrors = (result, sourceSentence, sourceWord, sourceType) => {
+    const newErrors = [];
+    (result.grammarErrors||[]).forEach(e => {
+      if (!e.error || !e.correction) return;
+      newErrors.push({
+        id: Date.now() + Math.random(),
+        type: "grammar",
+        source: sourceType,       // "writing" | "daily" | "journal"
+        word: sourceWord || "",
+        original: sourceSentence,
+        error: e.error,
+        correction: e.correction,
+        rule: e.rule || "",
+        reviewed: false,
+        savedAt: Date.now(),
+      });
+    });
+    (result.spellingErrors||[]).forEach(e => {
+      if (!e.wrong || !e.correct) return;
+      newErrors.push({
+        id: Date.now() + Math.random(),
+        type: "spelling",
+        source: sourceType,
+        word: sourceWord || "",
+        original: sourceSentence,
+        error: e.wrong,
+        correction: e.correct,
+        rule: e.tip || "",
+        reviewed: false,
+        savedAt: Date.now(),
+      });
+    });
+    if (newErrors.length > 0) {
+      setErrorBank(prev => [...newErrors, ...prev].slice(0, 200));
+    }
+  };
 
   // Manual sync
   const doManualSync = async () => {
@@ -1050,6 +1097,8 @@ function VocabApp({ apiKey }) {
     .reading-opt.ok{background:rgba(74,222,128,.15);border-color:#4ade80!important;color:#4ade80;}
     .reading-opt.no{background:rgba(248,113,113,.15);border-color:#f87171!important;color:#f87171;}
     .journal-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .error-card{background:rgba(248,113,113,.05);border:1px solid rgba(248,113,113,.15);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .error-card.reviewed{opacity:.5;border-color:rgba(255,255,255,.07);background:rgba(255,255,255,.02);}
     .shadow-bar{height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:.3rem;}
     .shadow-bar-fill{height:100%;border-radius:3px;transition:width .5s;}
     .streak-badge{display:inline-flex;align-items:center;gap:.3rem;background:linear-gradient(135deg,rgba(251,191,36,.2),rgba(248,113,113,.15));border:1px solid rgba(251,191,36,.3);border-radius:999px;padding:.3rem .9rem;font-size:.85rem;font-weight:700;color:#fbbf24;}
@@ -1074,6 +1123,7 @@ function VocabApp({ apiKey }) {
   const dailyDone = dailyProgress?.date === todayStr && dailyProgress?.completed;
   const modeLabel = {
     [MODES.DAILY]: dailyDone ? "🔥 Daily ✓" : "🔥 Daily",
+    [MODES.ERRORS]: errorBank.filter(e=>!e.reviewed).length > 0 ? `❌ Lỗi (${errorBank.filter(e=>!e.reviewed).length})` : "❌ Lỗi",
     [MODES.FLASHCARD]:"📇 Thẻ",
     [MODES.QUIZ]:"🧠 Quiz",
     [MODES.SRS]: dueCount>0 ? `🔁 SRS (${dueCount})` : "🔁 SRS",
@@ -1878,6 +1928,7 @@ function VocabApp({ apiKey }) {
               const result = await checkWriting(writingWord, writingInput.trim(), apiKey);
               setWritingResult(result);
               setWritingHistory(h => [{ word: writingWord.word, sentence: writingInput.trim(), score: result.overallScore, ts: Date.now() }, ...h.slice(0, 9)]);
+              saveErrors(result, writingInput.trim(), writingWord?.word, "writing");
             } catch(e) {
               setWritingResult({ error: e.message });
             } finally {
@@ -2909,14 +2960,22 @@ function VocabApp({ apiKey }) {
             {id:3, icon:"🎤", label:"Luyện nói"},
           ];
 
+          const unreviewedErrors = errorBank.filter(e=>!e.reviewed);
+          const todayRewritePool = unreviewedErrors.slice(0, 3); // max 3 errors per day
+
           const startChallenge = async () => {
             setDailyLoading(true); setDailyChallenge(null);
-            setDailyStep(1); setDailyListened(false);
+            setDailyListened(false);
             setDailyWriteInput(""); setDailyWriteResult(null); setDailySpeakResult(null);
+            setDailyDictInput(""); setDailyDictChecked(false);
+            setRewriteIdx(0); setRewriteInput(""); setRewriteChecked(false);
+            setRewriteScore({correct:0,total:0});
             try {
               const pool = allWords.length > 0 ? allWords : [];
               const challenge = await generateDailyChallenge(pool, levelFilter==="All"?"B1":levelFilter, apiKey);
               setDailyChallenge(challenge);
+              // Go to rewrite step if there are unreviewed errors, else step 1
+              setDailyStep(todayRewritePool.length > 0 ? -1 : 1);
             } catch(e) { alert("Lỗi tạo challenge: "+e.message); setDailyStep(0); }
             finally { setDailyLoading(false); }
           };
@@ -2934,6 +2993,7 @@ function VocabApp({ apiKey }) {
             try {
               const res = await checkWriting({word:dailyChallenge.focusWord,meaning:dailyChallenge.focusMeaning,type:"",level:"B1",phonetic:"",meaningEn:"",example:""}, dailyWriteInput.trim(), apiKey);
               setDailyWriteResult(res);
+              saveErrors(res, dailyWriteInput.trim(), dailyChallenge?.focusWord, "daily");
             } catch(e) { setDailyWriteResult({error:e.message}); }
             finally { setDailyWriteLoading(false); }
           };
@@ -3032,6 +3092,122 @@ function VocabApp({ apiKey }) {
               <button className="spkbtn btn" onClick={()=>speak(c.focusWord,0.7)}>🔊</button>
             </div>
           );
+
+
+          // ── STEP -1: REWRITE CHALLENGE (from Error Bank) ──────────────
+          if (dailyStep===-1) {
+            const pool = errorBank.filter(e=>!e.reviewed).slice(0, 3);
+            if (pool.length === 0) { setDailyStep(1); return null; }
+            const cur = pool[rewriteIdx];
+            const normalize = s => s.trim().toLowerCase().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
+
+            const checkRewrite = () => {
+              if (!rewriteInput.trim()) return;
+              // Check if the rewrite contains the correction and not the error
+              const ans = normalize(rewriteInput);
+              const hasCorrection = ans.includes(normalize(cur.correction));
+              const stillHasError = ans.includes(normalize(cur.error));
+              const isOk = hasCorrection && !stillHasError;
+              setRewriteChecked(true);
+              setRewriteScore(p=>({correct:p.correct+(isOk?1:0),total:p.total+1}));
+              if (isOk) setErrorBank(prev=>prev.map(e=>e.id===cur.id?{...e,reviewed:true}:e));
+            };
+
+            const nextRewrite = () => {
+              if (rewriteIdx+1 >= pool.length) { setDailyStep(1); return; }
+              setRewriteIdx(i=>i+1);
+              setRewriteInput(""); setRewriteChecked(false);
+            };
+
+            return (
+              <div>
+                {/* Header */}
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".8rem"}}>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem",fontWeight:700,color:"#fca5a5"}}>🔁 Ôn lỗi hôm qua</div>
+                  <div style={{fontSize:".72rem",color:"#5a4a6a"}}>{rewriteIdx+1} / {pool.length}</div>
+                </div>
+                <div style={{display:"flex",gap:"2px",marginBottom:"1rem"}}>
+                  {pool.map((_,i)=><div key={i} style={{flex:1,height:3,borderRadius:2,background:i<rewriteIdx?"#4ade80":i===rewriteIdx?"#fbbf24":"rgba(255,255,255,.08)",transition:"background .3s"}}/>)}
+                </div>
+
+                {/* Error card */}
+                <div style={{background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.18)",borderRadius:18,padding:"1.2rem",marginBottom:"1rem"}}>
+                  <div style={{fontSize:".68rem",color:"#f87171",letterSpacing:".1em",textTransform:"uppercase",marginBottom:".6rem"}}>LỖI CẦN SỬA</div>
+
+                  {/* Error → correction display */}
+                  <div style={{display:"flex",alignItems:"center",gap:".7rem",flexWrap:"wrap",marginBottom:".6rem"}}>
+                    <span style={{background:"rgba(248,113,113,.18)",borderRadius:8,padding:".2rem .75rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:"1rem",textDecoration:"line-through"}}>{cur.error}</span>
+                    <span style={{color:"#5a4a6a",fontSize:"1.1rem"}}>→</span>
+                    <span style={{background:"rgba(74,222,128,.18)",borderRadius:8,padding:".2rem .75rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontSize:"1rem",fontWeight:700}}>{cur.correction}</span>
+                  </div>
+
+                  {cur.rule&&<div style={{fontSize:".8rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".5rem"}}>📌 {cur.rule}</div>}
+
+                  {/* Original sentence for context */}
+                  {cur.original&&(
+                    <div style={{fontSize:".8rem",color:"#4a3a5a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",borderLeft:"2px solid rgba(248,113,113,.25)",paddingLeft:".7rem"}}>
+                      Câu gốc: "{cur.original.slice(0,120)}{cur.original.length>120?"...":""}"
+                    </div>
+                  )}
+                </div>
+
+                {/* Task */}
+                <div style={{background:"rgba(167,139,250,.07)",border:"1px solid rgba(167,139,250,.18)",borderRadius:14,padding:".8rem 1rem",marginBottom:".8rem",fontSize:".9rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif",lineHeight:1.6}}>
+                  ✍️ Viết lại câu gốc, sửa lỗi <b style={{color:"#f87171"}}>"{cur.error}"</b> thành <b style={{color:"#4ade80"}}>"{cur.correction}"</b>
+                </div>
+
+                {!rewriteChecked ? (
+                  <div>
+                    <textarea className="writing-area" rows={3}
+                      placeholder="Viết lại câu đã sửa lỗi..."
+                      value={rewriteInput}
+                      onChange={e=>setRewriteInput(e.target.value)}
+                      onKeyDown={e=>{if(e.key==="Enter"&&e.ctrlKey&&rewriteInput.trim()) checkRewrite();}}
+                      autoFocus
+                    />
+                    <div style={{fontSize:".65rem",color:"#3a2a4a",marginTop:".25rem",marginBottom:".8rem"}}>Ctrl+Enter để kiểm tra</div>
+                    <button className="btn" onClick={checkRewrite} disabled={!rewriteInput.trim()}
+                      style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#f87171,#f472b6)",color:"white",border:"none",fontWeight:700,fontSize:"1rem",opacity:!rewriteInput.trim()?0.5:1}}>
+                      ✅ Kiểm tra
+                    </button>
+                  </div>
+                ) : (
+                  <div className="fade-in">
+                    {/* Result */}
+                    {(()=>{
+                      const ans = normalize(rewriteInput);
+                      const isOk = ans.includes(normalize(cur.correction)) && !ans.includes(normalize(cur.error));
+                      return (
+                        <div style={{textAlign:"center",padding:"1rem",borderRadius:14,marginBottom:"1rem",
+                          background:isOk?"rgba(74,222,128,.1)":"rgba(248,113,113,.08)",
+                          border:`1px solid ${isOk?"rgba(74,222,128,.25)":"rgba(248,113,113,.2)"}`}}>
+                          <div style={{fontSize:"1.8rem",marginBottom:".3rem"}}>{isOk?"✅":"❌"}</div>
+                          <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:isOk?"#4ade80":"#f87171",fontSize:"1rem",marginBottom:".3rem"}}>
+                            {isOk?"Đúng rồi! Lỗi đã được sửa 🎉":"Chưa đúng — xem lại câu đã sửa"}
+                          </div>
+                          {!isOk&&(
+                            <div style={{fontSize:".85rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginTop:".4rem"}}>
+                              Gợi ý: dùng <b>"{cur.correction}"</b> thay cho <b>"{cur.error}"</b>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
+
+                    {/* Score */}
+                    <div style={{fontSize:".75rem",color:"#6a5a7a",textAlign:"center",marginBottom:".8rem"}}>
+                      Tiến độ: {rewriteScore.correct + (normalize(rewriteInput).includes(normalize(cur.correction))&&!normalize(rewriteInput).includes(normalize(cur.error))?1:0)} / {pool.length} lỗi đã sửa đúng
+                    </div>
+
+                    <button className="btn" onClick={nextRewrite}
+                      style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                      {rewriteIdx+1>=pool.length?"🚀 Bắt đầu Daily Challenge":"Lỗi tiếp theo →"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          }
 
           // ── STEP 1: DICTATION ─────────────────────────────────────────
           if (dailyStep===1) {
@@ -3785,6 +3961,7 @@ function VocabApp({ apiKey }) {
                         const prompt = journalPrompt||JOURNAL_PROMPTS[new Date().getDate()%JOURNAL_PROMPTS.length];
                         const r = await checkJournal(journalInput.trim(), prompt, apiKey);
                         setJournalResult(r);
+                        saveErrors(r, journalInput.trim(), "", "journal");
                         setJournalEntries(prev=>[{
                           date:new Date().toLocaleDateString("vi-VN"),
                           prompt, text:journalInput.trim(),
@@ -3936,6 +4113,115 @@ function VocabApp({ apiKey }) {
             )}
           </div>
         )}
+
+
+        {/* ══ ERROR BANK ══ */}
+        {mode===MODES.ERRORS && (() => {
+          const unreviewed = errorBank.filter(e=>!e.reviewed);
+          const reviewed   = errorBank.filter(e=>e.reviewed);
+          const sourceLabel = s => s==="writing"?"✏️ Writing":s==="daily"?"🔥 Daily":s==="journal"?"📔 Nhật ký":"?";
+          const sourceColor = s => s==="writing"?"#f472b6":s==="daily"?"#fbbf24":s==="journal"?"#a78bfa":"#7a6a8a";
+
+          const markReviewed = (id) => setErrorBank(prev=>prev.map(e=>e.id===id?{...e,reviewed:true}:e));
+          const deleteError  = (id) => setErrorBank(prev=>prev.filter(e=>e.id!==id));
+
+          return (
+            <div>
+              {/* Header */}
+              <div style={{background:"linear-gradient(145deg,rgba(248,113,113,.07),rgba(167,139,250,.04))",border:"1px solid rgba(248,113,113,.18)",borderRadius:20,padding:"1.1rem",marginBottom:"1rem"}}>
+                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#fca5a5",marginBottom:".25rem"}}>❌ Personal Error Bank</div>
+                <div style={{fontSize:".83rem",color:"#9a7a7a",fontFamily:"'Crimson Pro',serif",lineHeight:1.6}}>
+                  Tổng hợp lỗi từ Writing, Daily và Nhật ký. Ôn lại bằng Rewrite Challenge trong Daily mỗi ngày.
+                </div>
+                <div style={{display:"flex",gap:"1rem",marginTop:".6rem",fontSize:".75rem"}}>
+                  <span style={{color:"#f87171"}}>❌ Chưa ôn: {unreviewed.length}</span>
+                  <span style={{color:"#4ade80"}}>✓ Đã ôn: {reviewed.length}</span>
+                  <span style={{color:"#5a4a6a"}}>Tổng: {errorBank.length}</span>
+                </div>
+              </div>
+
+              {errorBank.length===0 ? (
+                <div style={{textAlign:"center",padding:"3rem 1rem",color:"#5a4a6a"}}>
+                  <div style={{fontSize:"3rem",marginBottom:".7rem"}}>🎯</div>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",color:"#8a7a9a",marginBottom:".4rem"}}>Chưa có lỗi nào được ghi nhận</div>
+                  <div style={{fontSize:".85rem",fontFamily:"'Crimson Pro',serif"}}>Lỗi sẽ tự động lưu khi bạn làm Writing, Daily hoặc Nhật ký.</div>
+                </div>
+              ) : (
+                <div>
+                  {/* Unreviewed errors */}
+                  {unreviewed.length>0 && (
+                    <>
+                      <div style={{fontSize:".7rem",color:"#f87171",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".6rem"}}>
+                        ❌ Cần ôn lại ({unreviewed.length})
+                      </div>
+                      {unreviewed.map((e)=>(
+                        <div key={e.id} className="error-card">
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:".5rem",marginBottom:".5rem"}}>
+                            <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                              <span style={{fontSize:".65rem",padding:"1px 8px",borderRadius:999,background:sourceColor(e.source)+"20",color:sourceColor(e.source),border:`1px solid ${sourceColor(e.source)}35`}}>{sourceLabel(e.source)}</span>
+                              <span style={{fontSize:".65rem",padding:"1px 8px",borderRadius:999,background:"rgba(248,113,113,.12)",color:"#fca5a5",border:"1px solid rgba(248,113,113,.2)"}}>
+                                {e.type==="grammar"?"📐 Ngữ pháp":"🔤 Chính tả"}
+                              </span>
+                              {e.word&&<span style={{fontSize:".65rem",color:"#5a4a6a",fontStyle:"italic"}}>từ: {e.word}</span>}
+                            </div>
+                            <button className="btn" onClick={()=>deleteError(e.id)}
+                              style={{padding:".18rem .5rem",borderRadius:6,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#4a3a5a",fontSize:".7rem"}}>✕</button>
+                          </div>
+                          {/* Error → correction */}
+                          <div style={{display:"flex",alignItems:"center",gap:".6rem",flexWrap:"wrap",marginBottom:".35rem"}}>
+                            <span style={{background:"rgba(248,113,113,.15)",borderRadius:6,padding:".15rem .65rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".92rem",textDecoration:"line-through"}}>{e.error}</span>
+                            <span style={{color:"#5a4a6a"}}>→</span>
+                            <span style={{background:"rgba(74,222,128,.15)",borderRadius:6,padding:".15rem .65rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:700,fontSize:".92rem"}}>{e.correction}</span>
+                          </div>
+                          {e.rule&&<div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".35rem"}}>📌 {e.rule}</div>}
+                          {e.original&&(
+                            <div style={{fontSize:".78rem",color:"#4a3a5a",fontFamily:"'Crimson Pro',serif",marginBottom:".45rem",fontStyle:"italic",borderLeft:"2px solid rgba(248,113,113,.2)",paddingLeft:".6rem"}}>
+                              "{e.original.slice(0,100)}{e.original.length>100?"...":""}"
+                            </div>
+                          )}
+                          <button className="btn" onClick={()=>markReviewed(e.id)}
+                            style={{padding:".28rem .8rem",borderRadius:8,background:"rgba(74,222,128,.1)",border:"1px solid rgba(74,222,128,.2)",color:"#86efac",fontSize:".75rem",fontWeight:600}}>
+                            ✓ Đánh dấu đã ôn
+                          </button>
+                        </div>
+                      ))}
+                    </>
+                  )}
+
+                  {/* Reviewed errors */}
+                  {reviewed.length>0 && (
+                    <>
+                      <div style={{fontSize:".7rem",color:"#4ade80",letterSpacing:".08em",textTransform:"uppercase",margin:"1rem 0 .6rem"}}>
+                        ✓ Đã ôn ({reviewed.length})
+                      </div>
+                      {reviewed.map((e)=>(
+                        <div key={e.id} className="error-card reviewed">
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:".5rem",flex:1}}>
+                              <span style={{background:"rgba(248,113,113,.12)",borderRadius:6,padding:".12rem .55rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".85rem",textDecoration:"line-through"}}>{e.error}</span>
+                              <span style={{color:"#5a4a6a",fontSize:".75rem"}}>→</span>
+                              <span style={{background:"rgba(74,222,128,.12)",borderRadius:6,padding:".12rem .55rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontSize:".85rem"}}>{e.correction}</span>
+                            </div>
+                            <button className="btn" onClick={()=>deleteError(e.id)}
+                              style={{padding:".18rem .5rem",borderRadius:6,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#4a3a5a",fontSize:".7rem"}}>✕</button>
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+
+                  {/* Clear all reviewed */}
+                  {reviewed.length>0 && (
+                    <button className="btn" onClick={()=>setErrorBank(prev=>prev.filter(e=>!e.reviewed))}
+                      style={{width:"100%",marginTop:".5rem",padding:".55rem",borderRadius:10,background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",color:"#4a3a5a",fontSize:".78rem"}}>
+                      🗑 Xoá tất cả đã ôn
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* ══ REVIEW ══ */}
         {mode===MODES.REVIEW && (
