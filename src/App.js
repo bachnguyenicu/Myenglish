@@ -648,35 +648,43 @@ const JOURNAL_PROMPTS = [
 
 // ─── Claude API — Check Rewrite (grammar-aware) ───────────────────────────
 async function checkRewriteWithAI(userSentence, errorPhrase, correctionPhrase, rule, apiKey) {
-  const prompt = `A student made a grammar mistake and is practicing fixing it.
+  const prompt = `You are a strict English grammar coach reviewing a Vietnamese student's rewritten sentence.
 
-Original error: "${errorPhrase}"
-Correct form: "${correctionPhrase}"
-Grammar rule: "${rule || "correct grammar usage"}"
+The student previously made this mistake: "${errorPhrase}" (should be: "${correctionPhrase}")
+Grammar rule being practiced: "${rule || "correct grammar"}"
 
-Student's rewritten sentence: "${userSentence}"
+Student's new sentence: "${userSentence}"
 
-Does the student's sentence correctly apply the grammar rule (avoid the error pattern and use correct grammar)?
-Important: Be lenient — the student does NOT need to use the exact correction word. They just need to avoid the error pattern and write grammatically correct English applying the same rule.
+Evaluate TWO things:
+1. Did the student fix the target error (avoid "${errorPhrase}" pattern, apply the rule)?
+2. Does the sentence have any OTHER grammar or spelling mistakes?
 
-Reply ONLY with JSON: {"correct": true, "feedback": "short feedback in Vietnamese (1 sentence)"}`;
+Reply ONLY with raw JSON, no markdown, no unescaped double quotes in strings:
+{"targetFixed": true, "otherErrors": [{"wrong": "Nowaday", "correct": "Nowadays", "note": "ghi chu ngan"}], "corrected": "fully corrected version of the sentence", "feedback": "nhan xet ngan bang tieng Viet"}
+
+Rules:
+- targetFixed: true only if the main grammar rule is correctly applied
+- otherErrors: array of other mistakes found (empty [] if none)
+- corrected: the fully corrected sentence (same as input if perfect)
+- feedback: 1 sentence in Vietnamese summarizing the result`;
 
   try {
     const data = await anthropicFetch(apiKey, {
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 120,
-      system: "Output ONLY raw JSON. No markdown.",
+      max_tokens: 300,
+      system: "Output ONLY raw JSON. No markdown. No unescaped double-quote characters inside string values.",
       messages: [{ role: "user", content: prompt }]
     });
     const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-    const m = raw.match(/\{[\s\S]*?\}/);
-    if (!m) return { correct: false, feedback: "Không thể kiểm tra" };
-    return JSON.parse(m[0]);
+    let parsed;
+    try { parsed = repairAndParseJSON(raw); } catch(e) { throw new Error("parse failed"); }
+    if (!Array.isArray(parsed.otherErrors)) parsed.otherErrors = [];
+    parsed.correct = parsed.targetFixed === true;
+    return parsed;
   } catch(e) {
-    // Fallback to string check if AI fails
     const ans = userSentence.trim().toLowerCase();
     const correct = ans.includes(correctionPhrase.toLowerCase()) && !ans.includes(errorPhrase.toLowerCase());
-    return { correct, feedback: correct ? "Đúng rồi!" : "Chưa đúng, thử lại nhé!" };
+    return { correct, targetFixed: correct, otherErrors: [], corrected: userSentence, feedback: correct ? "Đã sửa đúng lỗi mục tiêu!" : "Chưa sửa đúng lỗi, thử lại nhé!" };
   }
 }
 
@@ -4176,7 +4184,9 @@ function VocabApp({ apiKey }) {
                 checked: true,
                 checking: false,
                 aiCorrect: result.correct,
-                aiFeedback: result.feedback
+                aiFeedback: result.feedback,
+                aiCorrected: result.corrected || "",
+                aiOtherErrors: result.otherErrors || []
               }}));
             } catch(err) {
               setEbPractice(p=>({...p,[id]:{input:inputText,checked:true,checking:false,aiCorrect:false,aiFeedback:"Lỗi kết nối, thử lại nhé!"}}));
@@ -4273,13 +4283,45 @@ function VocabApp({ apiKey }) {
                               </div>
                             ) : (
                               <div className="fade-in">
-                                {/* Kết quả */}
-                                <div style={{display:"flex",alignItems:"center",gap:".6rem",padding:".5rem .8rem",borderRadius:10,marginBottom:".5rem",
-                                  background:isOk?"rgba(74,222,128,.1)":"rgba(248,113,113,.08)",
-                                  border:`1px solid ${isOk?"rgba(74,222,128,.2)":"rgba(248,113,113,.18)"}`}}>
+                                {/* Lỗi mục tiêu */}
+                                <div style={{display:"flex",alignItems:"center",gap:".6rem",padding:".6rem .9rem",borderRadius:10,marginBottom:".6rem",
+                                  background:isOk?"rgba(74,222,128,.08)":"rgba(248,113,113,.08)",
+                                  border:`1px solid ${isOk?"rgba(74,222,128,.2)":"rgba(248,113,113,.2)"}`}}>
                                   <span style={{fontSize:"1.1rem"}}>{isOk?"✅":"❌"}</span>
-                                  <span style={{fontFamily:"'Crimson Pro',serif",fontSize:".88rem",color:isOk?"#86efac":"#fca5a5",fontStyle:"italic"}}>"{eb.input}"</span>
+                                  <div style={{flex:1}}>
+                                    <div style={{fontFamily:"'Crimson Pro',serif",fontSize:".82rem",color:isOk?"#4ade80":"#f87171",fontWeight:700}}>
+                                      {isOk?"Đã sửa đúng lỗi mục tiêu!":"Chưa sửa đúng lỗi mục tiêu"}
+                                    </div>
+                                    {eb.aiFeedback&&<div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginTop:".15rem"}}>{eb.aiFeedback}</div>}
+                                  </div>
                                 </div>
+
+                                {/* Câu đã sửa hoàn chỉnh */}
+                                {eb.aiCorrected && eb.aiCorrected !== eb.input && (
+                                  <div style={{marginBottom:".6rem"}}>
+                                    <div style={{fontSize:".65rem",color:"#4ade80",letterSpacing:".08em",marginBottom:".25rem"}}>✅ CÂU ĐÃ SỬA HOÀN CHỈNH</div>
+                                    <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(74,222,128,.07)",border:"1px solid rgba(74,222,128,.15)",borderRadius:10,padding:".5rem .8rem"}}>
+                                      <span style={{flex:1,fontSize:".9rem",fontFamily:"'Crimson Pro',serif",color:"#86efac",fontStyle:"italic"}}>{eb.aiCorrected}</span>
+                                      <button className="spkbtn btn" style={{fontSize:".62rem",padding:".1rem .4rem"}} onClick={()=>speak(eb.aiCorrected,0.82)}>🔊</button>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* Các lỗi khác trong câu */}
+                                {eb.aiOtherErrors?.length>0 && (
+                                  <div style={{background:"rgba(251,191,36,.06)",border:"1px solid rgba(251,191,36,.18)",borderRadius:10,padding:".7rem .9rem",marginBottom:".6rem"}}>
+                                    <div style={{fontSize:".65rem",color:"#fbbf24",letterSpacing:".08em",marginBottom:".45rem"}}>⚠️ CÁC LỖI KHÁC TRONG CÂU</div>
+                                    {eb.aiOtherErrors.map((err,oi)=>(
+                                      <div key={oi} style={{display:"flex",alignItems:"center",gap:".5rem",marginBottom:".35rem",flexWrap:"wrap"}}>
+                                        <span style={{background:"rgba(248,113,113,.15)",borderRadius:5,padding:".1rem .5rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".85rem",textDecoration:"line-through"}}>{err.wrong}</span>
+                                        <span style={{color:"#5a4a6a",fontSize:".9rem"}}>→</span>
+                                        <span style={{background:"rgba(74,222,128,.15)",borderRadius:5,padding:".1rem .5rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:700,fontSize:".85rem"}}>{err.correct}</span>
+                                        {err.note&&<span style={{fontSize:".75rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>— {err.note}</span>}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+
                                 <div style={{display:"flex",gap:".5rem"}}>
                                   <button className="btn" onClick={()=>setEbPractice(p=>({...p,[e.id]:{input:"",checked:false}}))}
                                     style={{flex:1,padding:".5rem",borderRadius:10,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#7a6a8a",fontSize:".82rem"}}>
