@@ -645,6 +645,41 @@ const JOURNAL_PROMPTS = [
   "Bạn nghĩ AI sẽ thay đổi cuộc sống như thế nào?",
 ];
 
+
+// ─── Claude API — Check Rewrite (grammar-aware) ───────────────────────────
+async function checkRewriteWithAI(userSentence, errorPhrase, correctionPhrase, rule, apiKey) {
+  const prompt = `A student made a grammar mistake and is practicing fixing it.
+
+Original error: "${errorPhrase}"
+Correct form: "${correctionPhrase}"
+Grammar rule: "${rule || "correct grammar usage"}"
+
+Student's rewritten sentence: "${userSentence}"
+
+Does the student's sentence correctly apply the grammar rule (avoid the error pattern and use correct grammar)?
+Important: Be lenient — the student does NOT need to use the exact correction word. They just need to avoid the error pattern and write grammatically correct English applying the same rule.
+
+Reply ONLY with JSON: {"correct": true, "feedback": "short feedback in Vietnamese (1 sentence)"}`;
+
+  try {
+    const data = await anthropicFetch(apiKey, {
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 120,
+      system: "Output ONLY raw JSON. No markdown.",
+      messages: [{ role: "user", content: prompt }]
+    });
+    const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+    const m = raw.match(/\{[\s\S]*?\}/);
+    if (!m) return { correct: false, feedback: "Không thể kiểm tra" };
+    return JSON.parse(m[0]);
+  } catch(e) {
+    // Fallback to string check if AI fails
+    const ans = userSentence.trim().toLowerCase();
+    const correct = ans.includes(correctionPhrase.toLowerCase()) && !ans.includes(errorPhrase.toLowerCase());
+    return { correct, feedback: correct ? "Đúng rồi!" : "Chưa đúng, thử lại nhé!" };
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
   const [allWords, setAllWords] = useState(() => loadState("lx_words", BUILT_IN));
@@ -3102,16 +3137,19 @@ function VocabApp({ apiKey }) {
             const cur = pool[rewriteIdx];
             const normalize = s => s.trim().toLowerCase().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
 
-            const checkRewrite = () => {
-              if (!rewriteInput.trim()) return;
-              // Check if the rewrite contains the correction and not the error
-              const ans = normalize(rewriteInput);
-              const hasCorrection = ans.includes(normalize(cur.correction));
-              const stillHasError = ans.includes(normalize(cur.error));
-              const isOk = hasCorrection && !stillHasError;
-              setRewriteChecked(true);
-              setRewriteScore(p=>({correct:p.correct+(isOk?1:0),total:p.total+1}));
-              if (isOk) setErrorBank(prev=>prev.map(e=>e.id===cur.id?{...e,reviewed:true}:e));
+            const [rewriteAIResult, setRewriteAIResult] = useState(null);
+            const [rewriteChecking, setRewriteChecking] = useState(false);
+            const checkRewrite = async () => {
+              if (!rewriteInput.trim() || rewriteChecking) return;
+              setRewriteChecking(true);
+              try {
+                const result = await checkRewriteWithAI(rewriteInput.trim(), cur.error, cur.correction, cur.rule, apiKey);
+                setRewriteAIResult(result);
+                setRewriteChecked(true);
+                setRewriteScore(p=>({correct:p.correct+(result.correct?1:0),total:p.total+1}));
+                if (result.correct) setErrorBank(prev=>prev.map(e=>e.id===cur.id?{...e,reviewed:true}:e));
+              } catch(e) { setRewriteChecked(true); setRewriteAIResult({correct:false,feedback:""}); }
+              finally { setRewriteChecking(false); }
             };
 
             const nextRewrite = () => {
@@ -3168,17 +3206,16 @@ function VocabApp({ apiKey }) {
                       autoFocus
                     />
                     <div style={{fontSize:".65rem",color:"#3a2a4a",marginTop:".25rem",marginBottom:".8rem"}}>Ctrl+Enter để kiểm tra</div>
-                    <button className="btn" onClick={checkRewrite} disabled={!rewriteInput.trim()}
-                      style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#f87171,#f472b6)",color:"white",border:"none",fontWeight:700,fontSize:"1rem",opacity:!rewriteInput.trim()?0.5:1}}>
-                      ✅ Kiểm tra
+                    <button className="btn" onClick={checkRewrite} disabled={!rewriteInput.trim()||rewriteChecking}
+                      style={{width:"100%",padding:".88rem",borderRadius:14,background:"linear-gradient(135deg,#f87171,#f472b6)",color:"white",border:"none",fontWeight:700,fontSize:"1rem",opacity:(!rewriteInput.trim()||rewriteChecking)?0.5:1}}>
+                      {rewriteChecking?"⏳ Đang kiểm tra...":"✅ Kiểm tra"}
                     </button>
                   </div>
                 ) : (
                   <div className="fade-in">
                     {/* Result */}
                     {(()=>{
-                      const ans = normalize(rewriteInput);
-                      const isOk = ans.includes(normalize(cur.correction)) && !ans.includes(normalize(cur.error));
+                      const isOk = rewriteAIResult?.correct === true;
                       return (
                         <div style={{textAlign:"center",padding:"1rem",borderRadius:14,marginBottom:"1rem",
                           background:isOk?"rgba(74,222,128,.1)":"rgba(248,113,113,.08)",
@@ -3189,7 +3226,7 @@ function VocabApp({ apiKey }) {
                           </div>
                           {!isOk&&(
                             <div style={{fontSize:".85rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginTop:".4rem"}}>
-                              Gợi ý: dùng <b>"{cur.correction}"</b> thay cho <b>"{cur.error}"</b>
+                              {rewriteAIResult?.feedback || `Gợi ý: dùng "${cur.correction}" thay cho "${cur.error}"`}
                             </div>
                           )}
                         </div>
@@ -4128,7 +4165,21 @@ function VocabApp({ apiKey }) {
           const deleteError  = (id) => setErrorBank(prev=>prev.filter(e=>e.id!==id));
           const getEB = (id) => ebPractice[id] || {input:"", checked:false};
           const setEBInput = (id, val) => setEbPractice(p=>({...p,[id]:{...p[id]||{input:"",checked:false},input:val,checked:false}}));
-          const checkEB = (id) => setEbPractice(p=>({...p,[id]:{...p[id]||{input:"",checked:false},checked:true}}));
+          const checkEB = async (id, errorObj) => {
+            // Optimistically mark as checking
+            setEbPractice(p=>({...p,[id]:{...p[id]||{input:"",checked:false},checking:true}}));
+            const input = (ebPractice[id]?.input || "").trim();
+            if (!input) return;
+            const result = await checkRewriteWithAI(input, errorObj.error, errorObj.correction, errorObj.rule, apiKey);
+            setEbPractice(p=>({...p,[id]:{
+              ...p[id]||{input:"",checked:false},
+              checked:true,
+              checking:false,
+              aiCorrect: result.correct,
+              aiFeedback: result.feedback
+            }}));
+            if (result.correct) setErrorBank(prev=>prev.map(e=>e.id===id?{...e,reviewed:true}:e));
+          };
           const normalize = s => s.trim().toLowerCase().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
 
           return (
@@ -4162,7 +4213,7 @@ function VocabApp({ apiKey }) {
                       </div>
                       {unreviewed.map((e)=>{
                         const eb = getEB(e.id);
-                        const isOk = eb.checked && normalize(eb.input).includes(normalize(e.correction)) && !normalize(eb.input).includes(normalize(e.error));
+                        const isOk = eb.checked && eb.aiCorrect === true;
                         const isFail = eb.checked && !isOk;
                         return (
                           <div key={e.id} className="error-card" style={{borderColor:eb.checked?(isOk?"rgba(74,222,128,.3)":"rgba(248,113,113,.3)"):"rgba(248,113,113,.15)"}}>
@@ -4208,11 +4259,11 @@ function VocabApp({ apiKey }) {
                                   placeholder="Viết lại câu đã sửa lỗi..."
                                   value={eb.input}
                                   onChange={ev=>setEBInput(e.id, ev.target.value)}
-                                  onKeyDown={ev=>{if(ev.key==="Enter"&&ev.ctrlKey&&eb.input.trim()) checkEB(e.id);}}
+                                  onKeyDown={ev=>{if(ev.key==="Enter"&&ev.ctrlKey&&eb.input.trim()) checkEB(e.id,e);}}
                                   style={{fontSize:".88rem",minHeight:60,marginBottom:".4rem"}}
                                 />
                                 <div style={{display:"flex",gap:".5rem"}}>
-                                  <button className="btn" onClick={()=>checkEB(e.id)} disabled={!eb.input.trim()}
+                                  <button className="btn" onClick={()=>checkEB(e.id,e)} disabled={!eb.input.trim()||eb.checking}
                                     style={{flex:1,padding:".55rem",borderRadius:10,background:"linear-gradient(135deg,#f472b6,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:".85rem",opacity:!eb.input.trim()?0.5:1}}>
                                     ✅ Kiểm tra
                                   </button>
