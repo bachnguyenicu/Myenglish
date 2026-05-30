@@ -4165,20 +4165,22 @@ function VocabApp({ apiKey }) {
           const deleteError  = (id) => setErrorBank(prev=>prev.filter(e=>e.id!==id));
           const getEB = (id) => ebPractice[id] || {input:"", checked:false};
           const setEBInput = (id, val) => setEbPractice(p=>({...p,[id]:{...p[id]||{input:"",checked:false},input:val,checked:false}}));
-          const checkEB = async (id, errorObj) => {
-            // Optimistically mark as checking
-            setEbPractice(p=>({...p,[id]:{...p[id]||{input:"",checked:false},checking:true}}));
-            const input = (ebPractice[id]?.input || "").trim();
-            if (!input) return;
-            const result = await checkRewriteWithAI(input, errorObj.error, errorObj.correction, errorObj.rule, apiKey);
-            setEbPractice(p=>({...p,[id]:{
-              ...p[id]||{input:"",checked:false},
-              checked:true,
-              checking:false,
-              aiCorrect: result.correct,
-              aiFeedback: result.feedback
-            }}));
-            if (result.correct) setErrorBank(prev=>prev.map(e=>e.id===id?{...e,reviewed:true}:e));
+          const checkEB = async (id, errorObj, inputText) => {
+            if (!inputText?.trim()) return;
+            // Mark as checking first
+            setEbPractice(p=>({...p,[id]:{...p[id]||{},input:inputText,checking:true,checked:false}}));
+            try {
+              const result = await checkRewriteWithAI(inputText.trim(), errorObj.error, errorObj.correction, errorObj.rule, apiKey);
+              setEbPractice(p=>({...p,[id]:{
+                input: inputText,
+                checked: true,
+                checking: false,
+                aiCorrect: result.correct,
+                aiFeedback: result.feedback
+              }}));
+            } catch(err) {
+              setEbPractice(p=>({...p,[id]:{input:inputText,checked:true,checking:false,aiCorrect:false,aiFeedback:"Lỗi kết nối, thử lại nhé!"}}));
+            }
           };
           const normalize = s => s.trim().toLowerCase().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
 
@@ -4259,11 +4261,11 @@ function VocabApp({ apiKey }) {
                                   placeholder="Viết lại câu đã sửa lỗi..."
                                   value={eb.input}
                                   onChange={ev=>setEBInput(e.id, ev.target.value)}
-                                  onKeyDown={ev=>{if(ev.key==="Enter"&&ev.ctrlKey&&eb.input.trim()) checkEB(e.id,e);}}
+                                  onKeyDown={ev=>{if(ev.key==="Enter"&&ev.ctrlKey&&eb.input.trim()) checkEB(e.id,e,eb.input);}}
                                   style={{fontSize:".88rem",minHeight:60,marginBottom:".4rem"}}
                                 />
                                 <div style={{display:"flex",gap:".5rem"}}>
-                                  <button className="btn" onClick={()=>checkEB(e.id,e)} disabled={!eb.input.trim()||eb.checking}
+                                  <button className="btn" onClick={()=>checkEB(e.id,e,eb.input)} disabled={!eb.input.trim()||eb.checking}
                                     style={{flex:1,padding:".55rem",borderRadius:10,background:"linear-gradient(135deg,#f472b6,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:".85rem",opacity:!eb.input.trim()?0.5:1}}>
                                     ✅ Kiểm tra
                                   </button>
