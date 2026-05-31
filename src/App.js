@@ -166,7 +166,7 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
           onError?.(e.message);
         }
       };
-      reader.onerror = (e) =>
+      reader.onerror = () => onError?.("Lỗi đọc audio");
       reader.readAsDataURL(blob);
     };
 
