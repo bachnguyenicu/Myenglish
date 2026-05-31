@@ -199,7 +199,7 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
           } else if (hasSpoken && !silenceTimer) {
             silenceTimer = setTimeout(() => {
               if (mr.state === "recording") { clearTimeout(maxTimer); mr.stop(); }
-            }, 1500);
+            }, 2500);
           }
           requestAnimationFrame(checkSilence);
         };
