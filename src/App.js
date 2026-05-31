@@ -122,7 +122,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { DAILY:"daily", ERRORS:"errors", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
+const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 
@@ -817,6 +817,75 @@ Rules:
   }
 }
 
+
+// ─── Claude API — Generate IELTS Task 2 Prompt ───────────────────────────
+async function generateIeltsPrompt(taskType, apiKey) {
+  const types = {
+    "opinion":    "Opinion/Agree or Disagree — 'To what extent do you agree or disagree?'",
+    "discussion": "Discussion — 'Discuss both views and give your own opinion.'",
+    "problem":    "Problem & Solution — 'What are the causes? What solutions can you suggest?'",
+    "advantage":  "Advantages & Disadvantages — 'Do the advantages outweigh the disadvantages?'",
+    "direct":     "Direct Question — two or three direct questions to answer",
+  };
+  const chosen = taskType === "random"
+    ? Object.values(types)[Math.floor(Math.random()*Object.keys(types).length)]
+    : (types[taskType] || types["opinion"]);
+
+  const prompt = `Create ONE authentic IELTS Academic Writing Task 2 question.
+Type: ${chosen}
+Topic: choose from education, technology, environment, society, health, globalisation, or work.
+
+Reply ONLY with JSON:
+{"type":"${taskType==="random"?"(type name)":taskType}","topic":"topic in 2-3 words","question":"Full IELTS task 2 question (2-4 sentences, exactly as it appears on the exam). End with the task instruction.","timeLimit":40,"wordLimit":250}`;
+
+  const data = await anthropicFetch(apiKey, {
+    model:"claude-haiku-4-5-20251001", max_tokens:400,
+    system:"Output ONLY raw JSON. No markdown.",
+    messages:[{role:"user",content:prompt}]
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Không tạo được đề"); }
+}
+
+// ─── Claude API — Grade IELTS Task 2 Essay ───────────────────────────────
+async function gradeIeltsEssay(question, essay, apiKey) {
+  const wordCount = essay.trim().split(/\s+/).filter(Boolean).length;
+  const prompt = `You are an official IELTS examiner. Grade this Task 2 essay strictly according to IELTS band descriptors.
+
+QUESTION: ${question}
+
+ESSAY (${wordCount} words):
+${essay}
+
+Grade each criterion from 0-9 (can use .5 increments). Be strict and realistic.
+
+Reply ONLY with raw JSON (no unescaped double quotes in strings):
+{
+  "overallBand": 6.5,
+  "wordCount": ${wordCount},
+  "criteria": {
+    "taskAchievement": {"band": 6.5, "comment": "specific feedback on how well the question is answered"},
+    "coherenceCohesion": {"band": 6.0, "comment": "feedback on structure, paragraphing, linking"},
+    "lexicalResource": {"band": 6.5, "comment": "feedback on vocabulary range and accuracy"},
+    "grammaticalRange": {"band": 6.0, "comment": "feedback on grammar range and accuracy"}
+  },
+  "strengths": ["strength 1", "strength 2"],
+  "improvements": ["specific improvement 1", "specific improvement 2", "specific improvement 3"],
+  "improvedIntro": "A rewritten introduction paragraph showing better style",
+  "keyVocab": ["academic word 1", "academic word 2", "academic word 3", "academic word 4", "academic word 5"]
+}`;
+
+  const data = await anthropicFetch(apiKey, {
+    model:"claude-haiku-4-5-20251001", max_tokens:1200,
+    system:"You are a strict IELTS examiner. Output ONLY compact single-line JSON. No unescaped double quotes inside strings.",
+    messages:[{role:"user",content:prompt}]
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
   const [allWords, setAllWords] = useState(() => loadState("lx_words", BUILT_IN));
@@ -872,7 +941,16 @@ function VocabApp({ apiKey }) {
   const [rewriteScore, setRewriteScore] = useState({ correct:0, total:0 });
   const [rewriteAIResult, setRewriteAIResult] = useState(null);
   const [rewriteChecking, setRewriteChecking] = useState(false);
-  const [ebPractice, setEbPractice] = useState({}); // Error Bank practice: {id: {input, checked}}
+  const [ebPractice, setEbPractice] = useState({});
+  // IELTS Writing Task 2
+  const [ieltsPrompt, setIeltsPrompt] = useState(null);
+  const [ieltsEssay, setIeltsEssay]   = useState("");
+  const [ieltsResult, setIeltsResult] = useState(null);
+  const [ieltsLoading, setIeltsLoading] = useState(false);
+  const [ieltsGenLoading, setIeltsGenLoading] = useState(false);
+  const [ieltsHistory, setIeltsHistory] = useState(() => loadState("lx_ielts_w", []));
+  const [ieltsView, setIeltsView] = useState("write"); // write | history
+  const [ieltsTaskType, setIeltsTaskType] = useState("random"); // Error Bank practice: {id: {input, checked}}
   // Daily Challenge
   const [dailyProgress, setDailyProgress] = useState(() => loadState("lx_daily", null));
   const [dailyChallenge, setDailyChallenge] = useState(null);
@@ -1005,6 +1083,7 @@ function VocabApp({ apiKey }) {
   useEffect(() => { try { localStorage.setItem("lx_errors", JSON.stringify(errorBank)); } catch {} }, [errorBank]);
   useEffect(() => { try { localStorage.setItem("lx_daily", JSON.stringify(dailyProgress)); } catch {} }, [dailyProgress]);
   useEffect(() => { try { localStorage.setItem("lx_journal", JSON.stringify(journalEntries)); } catch {} }, [journalEntries]);
+  useEffect(() => { try { localStorage.setItem("lx_ielts_w", JSON.stringify(ieltsHistory)); } catch {} }, [ieltsHistory]);
 
   // Trigger cloud sync whenever any data changes
   useEffect(() => {
@@ -1274,6 +1353,9 @@ function VocabApp({ apiKey }) {
     .reading-opt.ok{background:rgba(74,222,128,.15);border-color:#4ade80!important;color:#4ade80;}
     .reading-opt.no{background:rgba(248,113,113,.15);border-color:#f87171!important;color:#f87171;}
     .journal-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .ielts-criterion{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:.75rem .9rem;margin-bottom:.5rem;}
+    .ielts-band{font-family:'Playfair Display',serif;font-weight:900;font-size:1.4rem;}
+    .word-count{font-size:.72rem;font-family:'Crimson Pro',serif;color:#5a4a6a;text-align:right;margin-top:.25rem;}
     .error-card{background:rgba(248,113,113,.05);border:1px solid rgba(248,113,113,.15);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
     .error-card.reviewed{opacity:.5;border-color:rgba(255,255,255,.07);background:rgba(255,255,255,.02);}
     .shadow-bar{height:6px;border-radius:3px;background:rgba(255,255,255,.08);overflow:hidden;margin-top:.3rem;}
@@ -1315,6 +1397,7 @@ function VocabApp({ apiKey }) {
     [MODES.PODCAST]:"🎙 Podcast",
     [MODES.JOURNAL]:"📔 Nhật ký",
     [MODES.GRAMMAR]: savedLessons.length > 0 ? `📒 Grammar (${savedLessons.length})` : "📒 Grammar",
+    [MODES.IELTS_W]:"🖊 IELTS Writing",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
   };
@@ -4544,6 +4627,274 @@ function VocabApp({ apiKey }) {
             </div>
           );
         })()}
+
+
+        {/* ══ IELTS WRITING TASK 2 ══ */}
+        {mode===MODES.IELTS_W && (
+          <div>
+            {/* Tab switcher */}
+            <div style={{display:"flex",gap:".5rem",marginBottom:"1rem"}}>
+              {[["write","✍️ Luyện viết"],["history","📋 Lịch sử"]].map(([v,l])=>(
+                <button key={v} className="btn" onClick={()=>setIeltsView(v)}
+                  style={{flex:1,padding:".5rem",borderRadius:10,fontSize:".88rem",fontWeight:700,
+                    background:ieltsView===v?"rgba(167,139,250,.18)":"rgba(255,255,255,.04)",
+                    border:`1.5px solid ${ieltsView===v?"rgba(167,139,250,.35)":"rgba(255,255,255,.08)"}`,
+                    color:ieltsView===v?"#c4b5fd":"#6a5a7a"}}>
+                  {l}
+                </button>
+              ))}
+            </div>
+
+            {ieltsView==="write" && (
+              <div>
+                {/* Task type selector */}
+                {!ieltsPrompt && (
+                  <div>
+                    <div style={{background:"linear-gradient(145deg,rgba(167,139,250,.07),rgba(96,165,250,.05))",border:"1px solid rgba(167,139,250,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#c4b5fd",marginBottom:".25rem"}}>🖊 IELTS Writing Task 2</div>
+                      <div style={{fontSize:".83rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+                        AI tạo đề thi thật → bạn viết essay 250+ từ → AI chấm band score theo 4 tiêu chí chính thức của IELTS.
+                      </div>
+                    </div>
+
+                    <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".4rem",letterSpacing:".05em"}}>Chọn dạng đề</div>
+                    <div style={{display:"flex",gap:".4rem",flexWrap:"wrap",marginBottom:"1rem"}}>
+                      {[
+                        ["random","🎲 Random","#a78bfa"],
+                        ["opinion","💬 Opinion","#f472b6"],
+                        ["discussion","⚖️ Discussion","#60a5fa"],
+                        ["problem","🔧 Problem/Solution","#4ade80"],
+                        ["advantage","📊 Adv/Disadv","#fbbf24"],
+                        ["direct","❓ Direct Q","#fb923c"],
+                      ].map(([val,label,col])=>(
+                        <button key={val} className="btn" onClick={()=>setIeltsTaskType(val)}
+                          style={{padding:".32rem .85rem",borderRadius:999,fontSize:".8rem",fontWeight:700,
+                            border:`1.5px solid ${ieltsTaskType===val?col+"cc":col+"44"}`,
+                            background:ieltsTaskType===val?col+"22":"transparent",
+                            color:ieltsTaskType===val?col:"#5a4a6a"}}>
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {ieltsGenLoading ? (
+                      <div>{[85,65,75,50].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:9,width:`${w}%`}}/>)}</div>
+                    ) : (
+                      <button className="btn" onClick={async()=>{
+                        setIeltsGenLoading(true); setIeltsPrompt(null); setIeltsEssay(""); setIeltsResult(null);
+                        try {
+                          const p = await generateIeltsPrompt(ieltsTaskType, apiKey);
+                          setIeltsPrompt(p);
+                        } catch(e) { alert("Lỗi: "+e.message); }
+                        finally { setIeltsGenLoading(false); }
+                      }} style={{width:"100%",padding:".9rem",borderRadius:14,background:"linear-gradient(135deg,#a78bfa,#818cf8)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                        🎯 Tạo đề thi
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {/* Essay writing area */}
+                {ieltsPrompt && !ieltsResult && (
+                  <div className="fade-in">
+                    {/* Question card */}
+                    <div style={{background:"linear-gradient(145deg,#1a1030,#0e1422)",border:"1px solid rgba(167,139,250,.25)",borderRadius:18,padding:"1.2rem",marginBottom:"1rem"}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".5rem"}}>
+                        <span style={{fontSize:".65rem",color:"#a78bfa",background:"rgba(167,139,250,.15)",borderRadius:6,padding:"1px 8px",textTransform:"uppercase",letterSpacing:".06em"}}>{ieltsPrompt.type} · {ieltsPrompt.topic}</span>
+                        <span style={{fontSize:".7rem",color:"#5a4a6a"}}>⏱ {ieltsPrompt.timeLimit||40} min · {ieltsPrompt.wordLimit||250}+ words</span>
+                      </div>
+                      <div style={{fontSize:"1rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0",lineHeight:1.75}}>
+                        {ieltsPrompt.question}
+                      </div>
+                    </div>
+
+                    {/* Essay textarea */}
+                    <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".3rem",letterSpacing:".05em"}}>Viết essay của bạn</div>
+                    <textarea className="writing-area" rows={14}
+                      placeholder="Write your IELTS Task 2 essay here...&#10;&#10;Aim for at least 250 words. Structure: Introduction → Body paragraph 1 → Body paragraph 2 → Conclusion"
+                      value={ieltsEssay}
+                      onChange={e=>setIeltsEssay(e.target.value)}
+                      style={{fontSize:".95rem",lineHeight:1.7,fontFamily:"'Crimson Pro',serif"}}
+                    />
+                    <div className="word-count">
+                      {(()=>{
+                        const wc = ieltsEssay.trim().split(/\s+/).filter(Boolean).length;
+                        const col = wc>=250?"#4ade80":wc>=200?"#fbbf24":"#f87171";
+                        return <span style={{color:col}}>{wc} words {wc>=250?"✓":wc>=200?"(getting there)":"(need "+( 250-wc)+" more)"}</span>;
+                      })()}
+                    </div>
+
+                    <div style={{display:"flex",gap:".6rem",marginTop:".8rem"}}>
+                      <button className="btn" onClick={()=>{setIeltsPrompt(null);setIeltsEssay("");}}
+                        style={{padding:".75rem 1rem",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#7a6a8a",fontSize:".88rem"}}>
+                        🔄 Đề mới
+                      </button>
+                      <button className="btn" onClick={async()=>{
+                        const wc = ieltsEssay.trim().split(/\s+/).filter(Boolean).length;
+                        if(wc < 150) { alert("Essay quá ngắn! Cần ít nhất 150 từ."); return; }
+                        setIeltsLoading(true);
+                        try {
+                          const r = await gradeIeltsEssay(ieltsPrompt.question, ieltsEssay.trim(), apiKey);
+                          setIeltsResult(r);
+                          setIeltsHistory(prev=>[{
+                            date: new Date().toLocaleDateString("vi-VN"),
+                            type: ieltsPrompt.type,
+                            topic: ieltsPrompt.topic,
+                            question: ieltsPrompt.question,
+                            essay: ieltsEssay.trim(),
+                            band: r.overallBand,
+                            wordCount: r.wordCount,
+                            ts: Date.now()
+                          }, ...prev.slice(0,19)]);
+                        } catch(e){ alert("Lỗi chấm bài: "+e.message); }
+                        finally{ setIeltsLoading(false); }
+                      }} disabled={ieltsLoading||ieltsEssay.trim().split(/\s+/).filter(Boolean).length<150}
+                        style={{flex:1,padding:".85rem",borderRadius:14,
+                          background:ieltsLoading?"rgba(167,139,250,.2)":"linear-gradient(135deg,#a78bfa,#ec4899)",
+                          color:"white",border:"none",fontWeight:700,fontSize:"1rem",
+                          opacity:ieltsEssay.trim().split(/\s+/).filter(Boolean).length<150?0.5:1}}>
+                        {ieltsLoading?"⏳ AI đang chấm bài...":"📊 Nộp bài & Chấm điểm"}
+                      </button>
+                    </div>
+                    {ieltsLoading && <div style={{marginTop:".8rem"}}>{[80,60,70,50,65].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:8,width:`${w}%`}}/>)}</div>}
+                  </div>
+                )}
+
+                {/* Results */}
+                {ieltsResult && (
+                  <div className="fade-in">
+                    {/* Overall band */}
+                    <div style={{background:"rgba(0,0,0,.35)",border:"2px solid rgba(167,139,250,.3)",borderRadius:20,padding:"1.2rem 1.4rem",marginBottom:"1rem",display:"flex",alignItems:"center",gap:"1.2rem"}}>
+                      <div style={{textAlign:"center",minWidth:80}}>
+                        <div className="ielts-band" style={{color:ieltsResult.overallBand>=7?"#4ade80":ieltsResult.overallBand>=6?"#fbbf24":"#f87171",fontSize:"2.8rem",lineHeight:1}}>
+                          {ieltsResult.overallBand}
+                        </div>
+                        <div style={{fontSize:".65rem",color:"#5a4a6a",marginTop:".1rem"}}>Overall Band</div>
+                      </div>
+                      <div style={{flex:1}}>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.05rem",color:"#f0eaff",marginBottom:".15rem"}}>
+                          {ieltsResult.overallBand>=8?"Excellent 🌟":ieltsResult.overallBand>=7?"Good 👍":ieltsResult.overallBand>=6?"Competent 💪":ieltsResult.overallBand>=5?"Modest 📚":"Limited 🔄"}
+                        </div>
+                        <div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif"}}>{ieltsResult.wordCount} words</div>
+                      </div>
+                    </div>
+
+                    {/* 4 Criteria */}
+                    <div style={{fontSize:".7rem",color:"#6a5a7a",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem"}}>📊 Band Score Chi Tiết</div>
+                    {[
+                      ["taskAchievement","🎯 Task Achievement","Trả lời đúng yêu cầu đề không?"],
+                      ["coherenceCohesion","🔗 Coherence & Cohesion","Cấu trúc và liên kết câu/đoạn"],
+                      ["lexicalResource","📚 Lexical Resource","Từ vựng phong phú và chính xác"],
+                      ["grammaticalRange","⚙️ Grammatical Range","Ngữ pháp đa dạng và chính xác"],
+                    ].map(([key,label,desc])=>{
+                      const c = ieltsResult.criteria?.[key];
+                      if(!c) return null;
+                      const col = c.band>=7?"#4ade80":c.band>=6?"#fbbf24":"#f87171";
+                      return (
+                        <div key={key} className="ielts-criterion">
+                          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".3rem"}}>
+                            <div style={{fontSize:".88rem",fontWeight:700,color:"#d4c8f0"}}>{label}</div>
+                            <div className="ielts-band" style={{color:col,fontSize:"1.3rem"}}>{c.band}</div>
+                          </div>
+                          <div style={{fontSize:".65rem",color:"#5a4a6a",marginBottom:".3rem",fontStyle:"italic"}}>{desc}</div>
+                          <div style={{fontSize:".85rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.6}}>{c.comment}</div>
+                        </div>
+                      );
+                    })}
+
+                    {/* Strengths */}
+                    {ieltsResult.strengths?.length>0 && (
+                      <div className="ielts-criterion" style={{borderColor:"rgba(74,222,128,.2)",marginTop:".5rem"}}>
+                        <div style={{fontSize:".7rem",color:"#4ade80",letterSpacing:".08em",marginBottom:".4rem"}}>✅ ĐIỂM MẠNH</div>
+                        {ieltsResult.strengths.map((s,i)=><div key={i} style={{fontSize:".88rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",marginBottom:".2rem"}}>• {s}</div>)}
+                      </div>
+                    )}
+
+                    {/* Improvements */}
+                    {ieltsResult.improvements?.length>0 && (
+                      <div className="ielts-criterion" style={{borderColor:"rgba(248,113,113,.2)"}}>
+                        <div style={{fontSize:".7rem",color:"#f87171",letterSpacing:".08em",marginBottom:".4rem"}}>📈 CẦN CẢI THIỆN</div>
+                        {ieltsResult.improvements.map((s,i)=><div key={i} style={{fontSize:".88rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",marginBottom:".25rem"}}>• {s}</div>)}
+                      </div>
+                    )}
+
+                    {/* Improved intro */}
+                    {ieltsResult.improvedIntro && (
+                      <div className="ielts-criterion" style={{borderColor:"rgba(96,165,250,.2)"}}>
+                        <div style={{fontSize:".7rem",color:"#60a5fa",letterSpacing:".08em",marginBottom:".4rem",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+                          <span>✨ MỞ BÀI MẪU</span>
+                          <button className="spkbtn btn" onClick={()=>speak(ieltsResult.improvedIntro,0.82)}>🔊</button>
+                        </div>
+                        <div style={{fontSize:".9rem",color:"#93c5fd",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,fontStyle:"italic"}}>
+                          {ieltsResult.improvedIntro}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Key vocab */}
+                    {ieltsResult.keyVocab?.length>0 && (
+                      <div className="ielts-criterion" style={{borderColor:"rgba(251,191,36,.2)"}}>
+                        <div style={{fontSize:".7rem",color:"#fbbf24",letterSpacing:".08em",marginBottom:".5rem"}}>📖 TỪ VỰNG ACADEMIC NÊN DÙNG</div>
+                        <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                          {ieltsResult.keyVocab.map((w,i)=>(
+                            <span key={i} style={{fontSize:".82rem",color:"#fde68a",background:"rgba(251,191,36,.1)",border:"1px solid rgba(251,191,36,.2)",borderRadius:8,padding:".2rem .65rem",fontFamily:"'Crimson Pro',serif",cursor:"pointer"}}
+                              onClick={()=>speak(w,0.75)}>
+                              {w}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    <div style={{display:"flex",gap:".7rem",marginTop:"1rem"}}>
+                      <button className="btn" onClick={()=>{setIeltsResult(null);}}
+                        style={{flex:1,padding:".82rem",borderRadius:14,background:"rgba(167,139,250,.1)",border:"1.5px solid rgba(167,139,250,.25)",color:"#c4b5fd",fontWeight:700,fontSize:".95rem"}}>
+                        ✏️ Viết lại
+                      </button>
+                      <button className="btn" onClick={()=>{setIeltsResult(null);setIeltsPrompt(null);setIeltsEssay("");}}
+                        style={{flex:1,padding:".82rem",borderRadius:14,background:"linear-gradient(135deg,#a78bfa,#818cf8)",color:"white",border:"none",fontWeight:700,fontSize:".95rem"}}>
+                        🎯 Đề mới
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* History tab */}
+            {ieltsView==="history" && (
+              <div>
+                {ieltsHistory.length===0 ? (
+                  <div style={{textAlign:"center",padding:"3rem 1rem",color:"#5a4a6a"}}>
+                    <div style={{fontSize:"3rem",marginBottom:".7rem"}}>🖊</div>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem",color:"#8a7a9a"}}>Chưa có bài viết nào</div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{fontSize:".72rem",color:"#7a6a8a",marginBottom:".6rem"}}>{ieltsHistory.length} bài đã làm</div>
+                    {ieltsHistory.map((h,i)=>(
+                      <div key={i} className="journal-card">
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".3rem"}}>
+                          <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                            <span style={{fontSize:".65rem",color:"#a78bfa",background:"rgba(167,139,250,.12)",borderRadius:6,padding:"1px 8px"}}>{h.type}</span>
+                            <span style={{fontSize:".65rem",color:"#7a6a8a"}}>{h.topic}</span>
+                          </div>
+                          <div style={{display:"flex",gap:".6rem",alignItems:"center"}}>
+                            <span className="ielts-band" style={{fontSize:"1.2rem",color:h.band>=7?"#4ade80":h.band>=6?"#fbbf24":"#f87171"}}>{h.band}</span>
+                            <span style={{fontSize:".65rem",color:"#4a3a5a"}}>{h.date}</span>
+                          </div>
+                        </div>
+                        <div style={{fontSize:".78rem",color:"#5a4a6a",fontFamily:"'Crimson Pro',serif",marginBottom:".3rem",fontStyle:"italic",lineHeight:1.4}}>{h.question?.slice(0,120)}...</div>
+                        <div style={{fontSize:".75rem",color:"#4a3a5a"}}>{h.wordCount} words</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ══ REVIEW ══ */}
         {mode===MODES.REVIEW && (
