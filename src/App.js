@@ -157,7 +157,7 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
           const res = await fetch("/api/stt", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ audio: base64 }),
+            body: JSON.stringify({ audio: base64, mimeType }),
           });
           if (!res.ok) throw new Error("STT proxy error " + res.status);
           const data = await res.json();
