@@ -741,6 +741,8 @@ function VocabApp({ apiKey }) {
   const [rewriteInput, setRewriteInput] = useState("");
   const [rewriteChecked, setRewriteChecked] = useState(false);
   const [rewriteScore, setRewriteScore] = useState({ correct:0, total:0 });
+  const [rewriteAIResult, setRewriteAIResult] = useState(null);
+  const [rewriteChecking, setRewriteChecking] = useState(false);
   const [ebPractice, setEbPractice] = useState({}); // Error Bank practice: {id: {input, checked}}
   // Daily Challenge
   const [dailyProgress, setDailyProgress] = useState(() => loadState("lx_daily", null));
@@ -3145,8 +3147,6 @@ function VocabApp({ apiKey }) {
             const cur = pool[rewriteIdx];
             const normalize = s => s.trim().toLowerCase().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
 
-            const [rewriteAIResult, setRewriteAIResult] = useState(null);
-            const [rewriteChecking, setRewriteChecking] = useState(false);
             const checkRewrite = async () => {
               if (!rewriteInput.trim() || rewriteChecking) return;
               setRewriteChecking(true);
