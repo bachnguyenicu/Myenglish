@@ -147,15 +147,12 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
     mr.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       onEnd?.();
-      console.log("[STT] Recording stopped, chunks:", _audioChunks.length);
       if (_audioChunks.length === 0) { onError?.("Không nghe được gì"); return; }
       const blob = new Blob(_audioChunks, { type: mimeType });
-      console.log("[STT] Blob size:", blob.size, "type:", blob.type);
       // Convert to base64
       const reader = new FileReader();
       reader.onload = async () => {
         const base64 = reader.result.split(",")[1];
-        console.log("[STT] Sending to /api/stt, base64 length:", base64?.length);
         try {
           const res = await fetch("/api/stt", {
             method: "POST",
@@ -166,16 +163,14 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
           const data = await res.json();
           onResult?.(data); // {transcript, confidence, words}
         } catch(e) {
-          console.error("[STT] fetch error:", e.message);
           onError?.(e.message);
         }
       };
-      reader.onerror = (e) => console.error("[STT] FileReader error:", e);
+      reader.onerror = (e) =>
       reader.readAsDataURL(blob);
     };
 
     mr.start(continuous ? 1000 : undefined); // collect chunks every 1s if continuous
-    console.log("[STT] MediaRecorder started, mimeType:", mimeType);
     onStart?.();
 
     if (!continuous) {
