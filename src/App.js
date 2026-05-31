@@ -2638,7 +2638,7 @@ function VocabApp({ apiKey }) {
                 }
               },
             });
-          };      };
+          };
 
           // Generate new script
           const startConvo = async () => {
