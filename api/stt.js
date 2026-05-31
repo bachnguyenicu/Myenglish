@@ -11,14 +11,9 @@ export default async function handler(req, res) {
   const { audio, mimeType } = req.body || {};
   if (!audio) return res.status(400).json({ error: "Missing audio" });
 
-  // Determine encoding from mimeType sent by client
-  let encoding = "WEBM_OPUS";
-  let sampleRate = 48000;
-  if (mimeType) {
-    if (mimeType.includes("ogg")) { encoding = "OGG_OPUS"; sampleRate = 48000; }
-    else if (mimeType.includes("mp4") || mimeType.includes("aac")) { encoding = "MP3"; sampleRate = 16000; }
-    else if (mimeType.includes("wav")) { encoding = "LINEAR16"; sampleRate = 16000; }
-  }
+  // For WEBM_OPUS: do NOT set sampleRateHertz, Google auto-detects it
+  // Use latest_long model which handles longer audio better
+  const isWebm = !mimeType || mimeType.includes("webm");
 
   try {
     const response = await fetch(
@@ -28,14 +23,13 @@ export default async function handler(req, res) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           config: {
-            encoding,
-            sampleRateHertz: sampleRate,
+            encoding: "WEBM_OPUS",
             languageCode: "en-US",
-            model: "latest_long",
+            model: "latest_long",          // handles up to 1min audio
             enableWordConfidence: true,
             useEnhanced: true,
-            // Don't set sampleRateHertz if WEBM_OPUS — let Google auto-detect
-            ...(encoding === "WEBM_OPUS" ? { sampleRateHertz: undefined } : {}),
+            enableAutomaticPunctuation: true,
+            // sampleRateHertz intentionally omitted for WEBM_OPUS
           },
           audio: { content: audio },
         }),
@@ -50,15 +44,18 @@ export default async function handler(req, res) {
 
     const data = await response.json();
     const results = data.results || [];
-    if (results.length === 0) {
-      return res.status(200).json({ transcript: "", words: [], confidence: 0 });
-    }
 
-    const best = results[0].alternatives[0];
+    // Combine all result segments (for longer audio)
+    const fullTranscript = results.map(r => r.alternatives[0]?.transcript || "").join(" ").trim();
+    const allWords = results.flatMap(r => r.alternatives[0]?.words || []);
+    const avgConfidence = results.length > 0
+      ? results.reduce((s, r) => s + (r.alternatives[0]?.confidence || 0), 0) / results.length
+      : 0;
+
     return res.status(200).json({
-      transcript: best.transcript || "",
-      confidence: best.confidence || 0,
-      words: (best.words || []).map(w => ({ word: w.word, confidence: w.confidence || 0 })),
+      transcript: fullTranscript,
+      confidence: avgConfidence,
+      words: allWords.map(w => ({ word: w.word, confidence: w.confidence || 0 })),
     });
 
   } catch (err) {
