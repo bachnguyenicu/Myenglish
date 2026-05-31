@@ -5,11 +5,20 @@ export default async function handler(req, res) {
   if (req.method === "OPTIONS") return res.status(200).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
 
-  const apiKey = process.env.GOOGLE_TTS_API_KEY; // reuse same key
+  const apiKey = process.env.GOOGLE_TTS_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "API key not configured" });
 
-  const { audio } = req.body || {};
+  const { audio, mimeType } = req.body || {};
   if (!audio) return res.status(400).json({ error: "Missing audio" });
+
+  // Determine encoding from mimeType sent by client
+  let encoding = "WEBM_OPUS";
+  let sampleRate = 48000;
+  if (mimeType) {
+    if (mimeType.includes("ogg")) { encoding = "OGG_OPUS"; sampleRate = 48000; }
+    else if (mimeType.includes("mp4") || mimeType.includes("aac")) { encoding = "MP3"; sampleRate = 16000; }
+    else if (mimeType.includes("wav")) { encoding = "LINEAR16"; sampleRate = 16000; }
+  }
 
   try {
     const response = await fetch(
@@ -19,42 +28,38 @@ export default async function handler(req, res) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           config: {
-            encoding: "WEBM_OPUS",
-            sampleRateHertz: 48000,
+            encoding,
+            sampleRateHertz: sampleRate,
             languageCode: "en-US",
             model: "latest_long",
-            enableWordTimeOffsets: false,
-            enableWordConfidence: true,   // ← confidence per word for pronunciation scoring
-            alternativeLanguageCodes: [],
+            enableWordConfidence: true,
             useEnhanced: true,
+            // Don't set sampleRateHertz if WEBM_OPUS — let Google auto-detect
+            ...(encoding === "WEBM_OPUS" ? { sampleRateHertz: undefined } : {}),
           },
-          audio: { content: audio }, // base64 encoded audio
+          audio: { content: audio },
         }),
       }
     );
 
     if (!response.ok) {
       const err = await response.json().catch(() => ({}));
-      return res.status(response.status).json({ error: err?.error?.message || "STT error" });
+      const errMsg = err?.error?.message || JSON.stringify(err);
+      return res.status(response.status).json({ error: errMsg });
     }
 
     const data = await response.json();
     const results = data.results || [];
-
     if (results.length === 0) {
       return res.status(200).json({ transcript: "", words: [], confidence: 0 });
     }
 
-    // Get best alternative
     const best = results[0].alternatives[0];
-    const transcript = best.transcript || "";
-    const confidence = best.confidence || 0;
-    const words = (best.words || []).map(w => ({
-      word: w.word,
-      confidence: w.confidence || 0,
-    }));
-
-    return res.status(200).json({ transcript, confidence, words });
+    return res.status(200).json({
+      transcript: best.transcript || "",
+      confidence: best.confidence || 0,
+      words: (best.words || []).map(w => ({ word: w.word, confidence: w.confidence || 0 })),
+    });
 
   } catch (err) {
     return res.status(500).json({ error: err.message || "Internal error" });
