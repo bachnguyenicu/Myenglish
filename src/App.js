@@ -3930,32 +3930,47 @@ function VocabApp({ apiKey }) {
                 <div style={{background:"rgba(0,0,0,.25)",border:"1px solid rgba(251,191,36,.18)",borderRadius:16,padding:"1.1rem",marginBottom:"1rem",textAlign:"center"}}>
                   <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".1em",marginBottom:".8rem"}}>NGHE TOÀN BỘ PODCAST</div>
                   <button className={`mic-btn btn ${podcastPlaying?"speak-pulse":"idle"}`}
-                    onClick={()=>{
-                      if(podcastPlaying){window.speechSynthesis?.cancel();setPodcastPlaying(false);return;}
+                    onClick={async()=>{
+                      if(podcastPlaying){
+                        if(_ttsAudio){_ttsAudio.pause();_ttsAudio=null;}
+                        window.speechSynthesis?.cancel();
+                        setPodcastPlaying(false);
+                        return;
+                      }
                       setPodcastPlaying(true);
-                      let idx=0;
-                      const playNext=()=>{
-                        if(idx>=podcastEp.script.length){setPodcastPlaying(false);return;}
-                        const line=podcastEp.script[idx];
-                        const rate = line.speaker==="A"?0.85:0.78;
-                        const u=new SpeechSynthesisUtterance(line.line);
-                        u.lang="en-US"; u.rate=rate;
-                        u.onend=()=>{idx++;setTimeout(playNext,400);};
-                        window.speechSynthesis.speak(u);
-                        idx++;
+                      const script = podcastEp.script;
+
+                      // Play lines sequentially using Google TTS
+                      // Speaker A: en-US-Neural2-D (male), Speaker B: en-US-Neural2-F (female)
+                      const playLine = async (idx) => {
+                        if (idx >= script.length) { setPodcastPlaying(false); return; }
+                        const {speaker, line} = script[idx];
+                        const voice = speaker === "A" ? "en-US-Neural2-D" : "en-US-Neural2-F";
+                        const rate  = speaker === "A" ? 0.95 : 0.9;
+                        try {
+                          const res = await fetch("/api/tts", {
+                            method:"POST",
+                            headers:{"Content-Type":"application/json"},
+                            body: JSON.stringify({ text: line, rate, voice }),
+                          });
+                          if (!res.ok) throw new Error("TTS error");
+                          const { audio } = await res.json();
+                          const el = new Audio("data:audio/mp3;base64," + audio);
+                          _ttsAudio = el;
+                          el.onended = () => setTimeout(() => playLine(idx+1), 400);
+                          el.onerror = () => setTimeout(() => playLine(idx+1), 400);
+                          await el.play();
+                        } catch(e) {
+                          // fallback: Web Speech for this line then continue
+                          const u = new SpeechSynthesisUtterance(line);
+                          u.lang="en-US";
+                          u.rate = rate;
+                          u.pitch = speaker==="A" ? 1.1 : 0.85;
+                          u.onend = () => setTimeout(()=>playLine(idx+1), 350);
+                          window.speechSynthesis.speak(u);
+                        }
                       };
-                      // Play in sequence
-                      let i=0;
-                      const seq=()=>{
-                        if(i>=podcastEp.script.length){setPodcastPlaying(false);return;}
-                        const s=podcastEp.script[i];
-                        const u=new SpeechSynthesisUtterance(s.line);
-                        u.lang="en-US"; u.rate=s.speaker==="A"?0.85:0.78;
-                        u.pitch=s.speaker==="A"?1.05:0.92;
-                        u.onend=()=>{i++;setTimeout(seq,350);};
-                        window.speechSynthesis.speak(u); i++;
-                      };
-                      window.speechSynthesis.cancel(); seq();
+                      playLine(0);
                     }}
                     style={{width:72,height:72}}>
                     {podcastPlaying?"⏹":"▶️"}
