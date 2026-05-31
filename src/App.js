@@ -658,46 +658,54 @@ Reply ONLY with raw JSON:
 }
 
 // ─── Claude API — Mini Podcast ────────────────────────────────────────────
-async function generatePodcast(words, level, apiKey) {
-  const picks = words.slice(0, 4).map(w => w.word).join(", ");
-  const prompt = `Create a short English podcast dialogue between Speaker A and Speaker B for a Vietnamese learner at ${level} level. Include these words: ${picks}.
+async function generatePodcast(topic, level, apiKey) {
+  const topicLine = topic ? `Topic: "${topic}"` : `Topic: choose an interesting everyday topic (travel, technology, health, environment, education, etc.)`;
 
-IMPORTANT: Reply with ONLY a valid JSON object. No markdown, no explanation, no extra text before or after.
-Use this exact structure:
-{"title":"Episode title in Vietnamese","topic":"Topic in Vietnamese","script":[{"speaker":"A","line":"Hello, today we talk about..."},{"speaker":"B","line":"That sounds interesting..."}],"questions":[{"q":"Question in Vietnamese?","options":["A. option","B. option","C. option"],"answer":"A"}],"keyWords":["word1"]}
+  const prompt = `Create an IELTS Listening-style podcast for a ${level} English learner.
+${topicLine}
 
-Requirements: 6-8 script exchanges, 2-3 questions, script lines in English only.`;
+Format: A natural conversation between two speakers (A and B) — like IELTS Listening Section 3 or 4.
+- 10-14 exchanges, each line 1-2 natural sentences
+- Realistic academic/everyday vocabulary
+- B and A should disagree, ask questions, give opinions — not just agree
+- Questions should require careful listening (inference, detail, attitude)
+
+Reply ONLY with a valid JSON object, no markdown:
+{"title":"Title in Vietnamese","topic":"Topic summary in Vietnamese","script":[{"speaker":"A","line":"..."},{"speaker":"B","line":"..."}],"questions":[{"q":"Question in Vietnamese?","options":["A. first option","B. second option","C. third option","D. fourth option"],"answer":"B"},{"q":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"C"},{"q":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A"},{"q":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"D"}],"keyWords":["word1","word2","word3"]}
+
+Requirements:
+- 4 questions (IELTS style: detail, inference, attitude, main idea)
+- Each question has 4 options A B C D
+- Answers spread across A B C D
+- Script in English only
+- Questions and options in Vietnamese`;
 
   const data = await anthropicFetch(apiKey, {
     model: "claude-haiku-4-5-20251001",
-    max_tokens: 1500,
-    system: "You are a JSON generator. Output ONLY a single valid JSON object. No markdown fences. No text before or after the JSON. Never use double-quote characters inside string values.",
+    max_tokens: 2000,
+    system: "You are an IELTS test creator. Output ONLY a single valid JSON object. No markdown fences. No text before or after JSON. Never use unescaped double-quote characters inside string values — use single quotes instead.",
     messages: [{role:"user", content:prompt}]
   });
 
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-
   let parsed;
-  try {
-    parsed = repairAndParseJSON(raw);
-  } catch(e) {
-    // Try extracting JSON manually
+  try { parsed = repairAndParseJSON(raw); }
+  catch(e) {
     const m = raw.match(/\{[\s\S]*\}/);
     if (!m) throw new Error("Không tạo được podcast, thử lại nhé!");
-    try { parsed = JSON.parse(m[0]); } catch(e2) { throw new Error("Lỗi đọc dữ liệu podcast"); }
+    try { parsed = JSON.parse(m[0]); } catch { throw new Error("Lỗi đọc dữ liệu podcast"); }
   }
 
-  // Normalise — handle various field names AI might use
-  const script = parsed.script || parsed.dialogue || parsed.conversation || parsed.exchanges || [];
+  const script    = parsed.script || parsed.dialogue || parsed.conversation || [];
   const questions = parsed.questions || parsed.comprehension || [];
-  const keyWords = parsed.keyWords || parsed.keywords || parsed.vocabulary || [];
+  const keyWords  = parsed.keyWords || parsed.keywords || [];
 
   if (!Array.isArray(script) || script.length === 0) throw new Error("Script podcast trống, thử lại nhé!");
 
   return {
-    title:     parsed.title || "Mini Podcast",
-    topic:     parsed.topic || "",
-    script:    script.map(s => ({ speaker: s.speaker || s.role || "A", line: s.line || s.text || s.content || "" })),
+    title:     parsed.title || "IELTS Podcast",
+    topic:     parsed.topic || topic || "",
+    script:    script.map(s => ({ speaker: s.speaker||"A", line: s.line||s.text||"" })),
     questions: Array.isArray(questions) ? questions : [],
     keyWords:  Array.isArray(keyWords) ? keyWords : [],
   };
@@ -881,6 +889,8 @@ function VocabApp({ apiKey }) {
   const [readingErr, setReadingErr]     = useState("");
   // Podcast
   const [podcastEp, setPodcastEp]       = useState(null);
+  const [podcastTopic, setPodcastTopic]   = useState("");
+  const [podcastIeltsLevel, setPodcastIeltsLevel] = useState("B2");
   const [podcastPlaying, setPodcastPlaying] = useState(false);
   const [podcastQAnswers, setPodcastQAnswers] = useState([]);
   const [podcastChecked, setPodcastChecked] = useState(false);
@@ -3856,26 +3866,48 @@ function VocabApp({ apiKey }) {
           <div>
             {!podcastEp ? (
               <div>
-                <div style={{background:"linear-gradient(145deg,rgba(251,191,36,.07),rgba(96,165,250,.05))",border:"1px solid rgba(251,191,36,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1.2rem"}}>
-                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#fde68a",marginBottom:".3rem"}}>🎙 Mini Podcast</div>
-                  <div style={{fontSize:".83rem",color:"#9a8a6a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
-                    AI tạo đoạn hội thoại 2 người ~10 lượt, đọc bằng TTS. Nghe xong trả lời câu hỏi hiểu ý. Xem script khi cần.
+                <div style={{background:"linear-gradient(145deg,rgba(251,191,36,.07),rgba(96,165,250,.05))",border:"1px solid rgba(251,191,36,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#fde68a",marginBottom:".25rem"}}>🎙 IELTS Podcast</div>
+                  <div style={{fontSize:".83rem",color:"#9a8a6a",fontFamily:"'Crimson Pro',serif",lineHeight:1.6}}>
+                    AI tạo bài nghe theo format IELTS Listening — hội thoại tự nhiên, 4 câu hỏi trắc nghiệm A/B/C/D.
                   </div>
                 </div>
+
+                {/* Topic input */}
+                <div style={{marginBottom:".7rem"}}>
+                  <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Chủ đề (để trống = AI tự chọn)</div>
+                  <input className="fi" placeholder="vd: climate change, remote work, social media, AI in education..."
+                    value={podcastTopic} onChange={e=>setPodcastTopic(e.target.value)}
+                    onKeyDown={e=>e.key==="Enter"&&!podcastLoading&&document.getElementById("podcast-gen-btn")?.click()} />
+                </div>
+
+                {/* Level selector */}
+                <div style={{marginBottom:"1rem"}}>
+                  <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Cấp độ IELTS</div>
+                  <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                    {[["B1","IELTS 4-5","rgba(74,222,128,.2)","#4ade80"],["B2","IELTS 5.5-6.5","rgba(96,165,250,.2)","#60a5fa"],["C1","IELTS 7-8","rgba(167,139,250,.2)","#c4b5fd"],["C2","IELTS 8.5+","rgba(251,191,36,.2)","#fbbf24"]].map(([lv,desc,bg,col])=>(
+                      <button key={lv} className="btn" onClick={()=>setPodcastIeltsLevel(lv)}
+                        style={{padding:".32rem .85rem",borderRadius:999,border:`1.5px solid ${podcastIeltsLevel===lv?col+"cc":col+"44"}`,
+                          background:podcastIeltsLevel===lv?bg:"transparent",color:podcastIeltsLevel===lv?col:"#5a4a6a",fontSize:".8rem",fontWeight:700}}>
+                        {lv} <span style={{fontSize:".7rem",opacity:.7}}>({desc})</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 {podcastLoading ? (
                   <div>{[80,55,70,40,65].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:9,width:`${w}%`}}/>)}</div>
                 ) : (
-                  <button className="btn" onClick={async()=>{
+                  <button id="podcast-gen-btn" className="btn" onClick={async()=>{
                     setPodcastLoading(true); setPodcastEp(null); setPodcastChecked(false);
                     setPodcastQAnswers([]); setPodcastShowScript(false);
                     try {
-                      const pool = shuffle(allWords).slice(0,4);
-                      const ep = await generatePodcast(pool, levelFilter==="All"?"B1":levelFilter, apiKey);
+                      const ep = await generatePodcast(podcastTopic.trim(), podcastIeltsLevel, apiKey);
                       setPodcastEp(ep); setPodcastQAnswers(Array(ep.questions.length).fill(""));
                     } catch(e){alert("Lỗi: "+e.message);}
                     finally{setPodcastLoading(false);}
                   }} style={{width:"100%",padding:".9rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
-                    🎙 Tạo tập podcast mới
+                    🎙 Tạo bài nghe
                   </button>
                 )}
               </div>
@@ -3986,14 +4018,29 @@ function VocabApp({ apiKey }) {
                     ✅ Kiểm tra
                   </button>
                 ) : (
-                  <div className="fade-in" style={{textAlign:"center",padding:".8rem",borderRadius:14,background:"rgba(251,191,36,.07)",border:"1px solid rgba(251,191,36,.15)",marginBottom:".9rem"}}>
-                    {(()=>{const c=podcastQAnswers.filter((a,i)=>a===podcastEp.questions[i].answer).length;
-                      return <><div style={{fontSize:"2rem"}}>{c===3?"🏆":c===2?"👍":"📻"}</div>
-                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.3rem",fontWeight:700,color:"#fbbf24"}}>{c} / {podcastEp.questions.length} đúng</div></>;
+                  <div className="fade-in" style={{textAlign:"center",padding:"1rem 1.2rem",borderRadius:14,background:"rgba(251,191,36,.07)",border:"1px solid rgba(251,191,36,.2)",marginBottom:".9rem"}}>
+                    {(()=>{
+                      const total = podcastEp.questions.length;
+                      const c = podcastQAnswers.filter((a,i)=>a===podcastEp.questions[i].answer).length;
+                      const pct = Math.round(c/total*100);
+                      const emoji = pct===100?"🏆":pct>=75?"🌟":pct>=50?"👍":"📻";
+                      const band = pct===100?"Band 9":pct>=75?"Band 7-8":pct>=50?"Band 5-6":"Band dưới 5";
+                      return (<>
+                        <div style={{fontSize:"2.5rem",marginBottom:".3rem"}}>{emoji}</div>
+                        <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.6rem",fontWeight:900,color:"#fbbf24"}}>{c} / {total}</div>
+                        <div style={{fontSize:".82rem",color:"#9a7a3a",fontFamily:"'Crimson Pro',serif",marginTop:".2rem"}}>{band} — {pct}%</div>
+                      </>);
                     })()}
-                    <button className="btn" onClick={()=>{window.speechSynthesis?.cancel();setPodcastEp(null);}} style={{marginTop:".8rem",padding:".65rem 1.5rem",borderRadius:12,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:".9rem"}}>
-                      🎙 Tập mới
-                    </button>
+                    <div style={{display:"flex",gap:".6rem",marginTop:".9rem",justifyContent:"center"}}>
+                      <button className="btn" onClick={()=>{setPodcastChecked(false);setPodcastQAnswers(Array(podcastEp.questions.length).fill(""));}}
+                        style={{padding:".6rem 1.2rem",borderRadius:12,background:"rgba(255,255,255,.06)",border:"1px solid rgba(255,255,255,.12)",color:"#8a7a8a",fontWeight:600,fontSize:".88rem"}}>
+                        🔄 Làm lại
+                      </button>
+                      <button className="btn" onClick={()=>{window.speechSynthesis?.cancel();setPodcastEp(null);}}
+                        style={{padding:".6rem 1.2rem",borderRadius:12,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:".88rem"}}>
+                        🎙 Bài mới
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
