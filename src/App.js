@@ -170,12 +170,44 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
       reader.readAsDataURL(blob);
     };
 
-    mr.start(continuous ? 1000 : undefined); // collect chunks every 1s if continuous
+    mr.start(250); // collect chunks every 250ms for silence detection
     onStart?.();
 
     if (!continuous) {
-      // Auto-stop after silence detection (max 8s)
-      setTimeout(() => { if (mr.state === "recording") mr.stop(); }, 8000);
+      let silenceTimer = null;
+      let hasSpoken = false;
+      const maxTimer = setTimeout(() => {
+        if (mr.state === "recording") mr.stop();
+      }, 30000); // hard cap 30s
+
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const analyser = audioCtx.createAnalyser();
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+        analyser.fftSize = 512;
+        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+        const checkSilence = () => {
+          if (mr.state !== "recording") { clearTimeout(maxTimer); audioCtx.close(); return; }
+          analyser.getByteFrequencyData(dataArray);
+          const avg = dataArray.reduce((a,b)=>a+b,0) / dataArray.length;
+          if (avg > 8) {
+            hasSpoken = true;
+            clearTimeout(silenceTimer);
+            silenceTimer = null;
+          } else if (hasSpoken && !silenceTimer) {
+            silenceTimer = setTimeout(() => {
+              if (mr.state === "recording") { clearTimeout(maxTimer); mr.stop(); }
+            }, 1500);
+          }
+          requestAnimationFrame(checkSilence);
+        };
+        checkSilence();
+      } catch(e) {
+        clearTimeout(maxTimer);
+        setTimeout(() => { if (mr.state === "recording") mr.stop(); }, 20000);
+      }
     }
   }).catch(err => onError?.("Không truy cập được microphone: " + err.message));
 }
