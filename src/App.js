@@ -660,38 +660,47 @@ Reply ONLY with raw JSON:
 // ─── Claude API — Mini Podcast ────────────────────────────────────────────
 async function generatePodcast(words, level, apiKey) {
   const picks = words.slice(0, 4).map(w => w.word).join(", ");
-  const prompt = `Create a mini podcast dialogue between two speakers (A and B) for a Vietnamese learner at ${level} level.
-Include these words naturally: ${picks}
-Length: 8-10 exchanges total. Natural, interesting topic.
+  const prompt = `Create a short English podcast dialogue between Speaker A and Speaker B for a Vietnamese learner at ${level} level. Include these words: ${picks}.
 
-Reply ONLY with raw JSON:
-{
-  "title": "<episode title in Vietnamese>",
-  "topic": "<1-line topic description in Vietnamese>",
-  "script": [
-    {"speaker":"A","line":"..."},
-    {"speaker":"B","line":"..."}
-  ],
-  "questions": [
-    {"q": "<listening comprehension question in Vietnamese>", "options":["A. ...","B. ...","C. ..."], "answer":"A"},
-    {"q": "<question>", "options":["A. ...","B. ...","C. ..."], "answer":"B"},
-    {"q": "<question>", "options":["A. ...","B. ...","C. ..."], "answer":"C"}
-  ],
-  "keyWords": ["word1","word2"]
-}`;
-  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1000,
-    system:"Output ONLY raw JSON. No markdown. Never use unescaped double-quote characters inside string values — use single quotes instead.",
-    messages:[{role:"user",content:prompt}]});
+IMPORTANT: Reply with ONLY a valid JSON object. No markdown, no explanation, no extra text before or after.
+Use this exact structure:
+{"title":"Episode title in Vietnamese","topic":"Topic in Vietnamese","script":[{"speaker":"A","line":"Hello, today we talk about..."},{"speaker":"B","line":"That sounds interesting..."}],"questions":[{"q":"Question in Vietnamese?","options":["A. option","B. option","C. option"],"answer":"A"}],"keyWords":["word1"]}
+
+Requirements: 6-8 script exchanges, 2-3 questions, script lines in English only.`;
+
+  const data = await anthropicFetch(apiKey, {
+    model: "claude-haiku-4-5-20251001",
+    max_tokens: 1500,
+    system: "You are a JSON generator. Output ONLY a single valid JSON object. No markdown fences. No text before or after the JSON. Never use double-quote characters inside string values.",
+    messages: [{role:"user", content:prompt}]
+  });
+
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+
   let parsed;
-  try { parsed = repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc podcast: "+e.message); }
-  // Ensure required arrays exist
-  if (!Array.isArray(parsed.script) || parsed.script.length === 0) throw new Error("Script podcast trống, thử lại nhé!");
-  if (!Array.isArray(parsed.questions)) parsed.questions = [];
-  if (!Array.isArray(parsed.keyWords)) parsed.keyWords = [];
-  parsed.title  = parsed.title  || "Mini Podcast";
-  parsed.topic  = parsed.topic  || "";
-  return parsed;
+  try {
+    parsed = repairAndParseJSON(raw);
+  } catch(e) {
+    // Try extracting JSON manually
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (!m) throw new Error("Không tạo được podcast, thử lại nhé!");
+    try { parsed = JSON.parse(m[0]); } catch(e2) { throw new Error("Lỗi đọc dữ liệu podcast"); }
+  }
+
+  // Normalise — handle various field names AI might use
+  const script = parsed.script || parsed.dialogue || parsed.conversation || parsed.exchanges || [];
+  const questions = parsed.questions || parsed.comprehension || [];
+  const keyWords = parsed.keyWords || parsed.keywords || parsed.vocabulary || [];
+
+  if (!Array.isArray(script) || script.length === 0) throw new Error("Script podcast trống, thử lại nhé!");
+
+  return {
+    title:     parsed.title || "Mini Podcast",
+    topic:     parsed.topic || "",
+    script:    script.map(s => ({ speaker: s.speaker || s.role || "A", line: s.line || s.text || s.content || "" })),
+    questions: Array.isArray(questions) ? questions : [],
+    keyWords:  Array.isArray(keyWords) ? keyWords : [],
+  };
 }
 
 // ─── Claude API — Journal Feedback ───────────────────────────────────────
