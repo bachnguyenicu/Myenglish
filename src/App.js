@@ -170,7 +170,7 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
       reader.readAsDataURL(blob);
     };
 
-    mr.start(250); // collect chunks every 250ms for silence detection
+    mr.start(); // single continuous chunk — required for Google STT
     onStart?.();
 
     if (!continuous) {
