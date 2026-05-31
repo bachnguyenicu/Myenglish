@@ -661,29 +661,43 @@ Reply ONLY with raw JSON:
 async function generatePodcast(topic, level, apiKey) {
   const topicLine = topic ? `Topic: "${topic}"` : `Topic: choose an interesting everyday topic (travel, technology, health, environment, education, etc.)`;
 
-  const prompt = `Create an IELTS Listening-style podcast for a ${level} English learner.
+  // Random IELTS question types for variety
+  const qTypes = [
+    "multiple choice (choose ONE answer from A/B/C/D)",
+    "multiple choice (choose TWO answers — format: answer: 'AC')",
+    "sentence completion — listener fills in a word/phrase from the recording",
+    "short answer — answer in NO MORE THAN THREE WORDS",
+    "matching — match speaker to statement",
+    "summary completion — choose from a box of words",
+  ];
+  // Pick 4 varied question types
+  const shuffledQ = [...qTypes].sort(()=>Math.random()-.5).slice(0,4);
+
+  const prompt = `Create an authentic IELTS Listening test (Section 3 or 4 style) in English.
 ${topicLine}
+Level: ${level}
 
-Format: A natural conversation between two speakers (A and B) — like IELTS Listening Section 3 or 4.
-- 10-14 exchanges, each line 1-2 natural sentences
-- Realistic academic/everyday vocabulary
-- B and A should disagree, ask questions, give opinions — not just agree
-- Questions should require careful listening (inference, detail, attitude)
+SCRIPT requirements:
+- 12-16 exchanges between Speaker A and Speaker B
+- Natural academic English, realistic disagreement and discussion
+- Include specific facts, numbers, or names that can be tested
 
-Reply ONLY with a valid JSON object, no markdown:
-{"title":"Title in Vietnamese","topic":"Topic summary in Vietnamese","script":[{"speaker":"A","line":"..."},{"speaker":"B","line":"..."}],"questions":[{"q":"Question in Vietnamese?","options":["A. first option","B. second option","C. third option","D. fourth option"],"answer":"B"},{"q":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"C"},{"q":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"A"},{"q":"...","options":["A. ...","B. ...","C. ...","D. ..."],"answer":"D"}],"keyWords":["word1","word2","word3"]}
+QUESTION requirements — use these exact 4 question types:
+1. Type: ${shuffledQ[0]}
+2. Type: ${shuffledQ[1]}
+3. Type: ${shuffledQ[2]}
+4. Type: ${shuffledQ[3]}
 
-Requirements:
-- 4 questions (IELTS style: detail, inference, attitude, main idea)
-- Each question has 4 options A B C D
-- Answers spread across A B C D
-- Script in English only
-- Questions and options in Vietnamese`;
+ALL text must be in English (title, topic, questions, options, answers).
+Spread answers across A B C D — do not use same answer twice in a row.
+
+Reply ONLY with this JSON structure:
+{"title":"Episode title in English","topic":"One-line topic in English","script":[{"speaker":"A","line":"..."},{"speaker":"B","line":"..."}],"questions":[{"type":"multiple choice","q":"What does Speaker A think about...?","options":["A. first option","B. second option","C. third option","D. fourth option"],"answer":"B"},{"type":"sentence completion","q":"The project deadline was moved to ___.","options":[],"answer":"the end of March"},{"type":"short answer","q":"What is the main problem Speaker B identifies?","options":[],"answer":"lack of funding"},{"type":"matching","q":"Which speaker mentions each point? A=Speaker A, B=Speaker B","options":["A. prefers online research","B. suggests interviewing experts","C. wants to extend the deadline","D. proposes a new structure"],"answer":"AC"}],"keyWords":["word1","word2","word3"]}`;
 
   const data = await anthropicFetch(apiKey, {
     model: "claude-haiku-4-5-20251001",
     max_tokens: 2000,
-    system: "You are an IELTS test creator. Output ONLY a single valid JSON object. No markdown fences. No text before or after JSON. Never use unescaped double-quote characters inside string values — use single quotes instead.",
+    system: "You are an official IELTS exam creator. All content must be in English. Output ONLY a single valid JSON object. No markdown. No text before or after JSON. Use single quotes inside strings, never unescaped double quotes.",
     messages: [{role:"user", content:prompt}]
   });
 
@@ -703,7 +717,7 @@ Requirements:
   if (!Array.isArray(script) || script.length === 0) throw new Error("Script podcast trống, thử lại nhé!");
 
   return {
-    title:     parsed.title || "IELTS Podcast",
+    title:     parsed.title || topic || "IELTS Listening",
     topic:     parsed.topic || topic || "",
     script:    script.map(s => ({ speaker: s.speaker||"A", line: s.line||s.text||"" })),
     questions: Array.isArray(questions) ? questions : [],
@@ -4005,26 +4019,72 @@ function VocabApp({ apiKey }) {
 
                 {/* Questions */}
                 <div style={{fontSize:".7rem",color:"#5a4a6a",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".6rem"}}>Câu hỏi nghe hiểu</div>
-                {podcastEp.questions.map((q,qi)=>(
-                  <div key={qi} style={{background:"rgba(255,255,255,.025)",border:"1px solid rgba(255,255,255,.06)",borderRadius:14,padding:"1rem",marginBottom:".8rem",opacity:podcastChecked?.85:1}}>
-                    <div style={{fontSize:".9rem",fontFamily:"'Crimson Pro',serif",fontWeight:600,color:"#f0eaff",marginBottom:".6rem"}}>{qi+1}. {q.q}</div>
-                    {q.options.map((opt,oi)=>{
-                      const letter=opt[0];
-                      const isSel=podcastQAnswers[qi]===letter;
-                      const isOk=podcastChecked&&letter===q.answer;
-                      const isNo=podcastChecked&&isSel&&!isOk;
-                      let cls="reading-opt";
-                      if(isOk)cls+=" ok"; else if(isNo)cls+=" no";
-                      return (
-                        <button key={oi} className={cls} disabled={podcastChecked}
-                          onClick={()=>setPodcastQAnswers(p=>{const a=[...p];a[qi]=letter;return a;})}
-                          style={{background:isSel&&!podcastChecked?"rgba(251,191,36,.12)":"",borderColor:isSel&&!podcastChecked?"#fbbf24":""}}>
-                          {opt}
-                        </button>
-                      );
-                    })}
-                  </div>
-                ))}
+                {podcastEp.questions.map((q,qi)=>{
+                  const isMulti = q.type?.includes("TWO") || (typeof q.answer==="string" && q.answer.length===2 && /^[A-D]{2}$/.test(q.answer));
+                  const isFreeText = !q.options || q.options.length===0;
+                  const userAns = podcastQAnswers[qi] || "";
+                  const isCorrect = podcastChecked && (
+                    isFreeText
+                      ? userAns.trim().toLowerCase() === (q.answer||"").trim().toLowerCase()
+                      : isMulti
+                        ? userAns.split("").sort().join("") === (q.answer||"").split("").sort().join("")
+                        : userAns === q.answer
+                  );
+
+                  return (
+                    <div key={qi} style={{background:"rgba(255,255,255,.025)",border:`1px solid ${podcastChecked?(isCorrect?"rgba(74,222,128,.25)":"rgba(248,113,113,.18)"):"rgba(255,255,255,.06)"}`,borderRadius:14,padding:"1rem",marginBottom:".8rem"}}>
+                      {/* Question type badge */}
+                      {q.type && <div style={{fontSize:".62rem",color:"#fbbf24",background:"rgba(251,191,36,.1)",borderRadius:6,padding:"1px 8px",display:"inline-block",marginBottom:".4rem",letterSpacing:".04em"}}>{q.type.toUpperCase()}</div>}
+                      <div style={{fontSize:".92rem",fontFamily:"'Crimson Pro',serif",fontWeight:600,color:"#f0eaff",marginBottom:".6rem",lineHeight:1.5}}>{qi+1}. {q.q}</div>
+
+                      {/* Multiple choice options */}
+                      {!isFreeText && q.options.map((opt,oi)=>{
+                        const letter = opt[0];
+                        const isSel = isMulti ? userAns.includes(letter) : userAns===letter;
+                        const isOk  = podcastChecked && (q.answer||"").includes(letter);
+                        const isNo  = podcastChecked && isSel && !isOk;
+                        let cls="reading-opt";
+                        if(isOk)cls+=" ok"; else if(isNo)cls+=" no";
+                        return (
+                          <button key={oi} className={cls} disabled={podcastChecked}
+                            onClick={()=>setPodcastQAnswers(p=>{
+                              const a=[...p];
+                              if(isMulti){
+                                const cur=a[qi]||"";
+                                a[qi]=cur.includes(letter)?cur.replace(letter,""):cur+letter;
+                              } else { a[qi]=letter; }
+                              return a;
+                            })}
+                            style={{background:isSel&&!podcastChecked?"rgba(251,191,36,.12)":"",borderColor:isSel&&!podcastChecked?"#fbbf24":""}}>
+                            {opt}
+                          </button>
+                        );
+                      })}
+
+                      {/* Free text input (sentence completion / short answer) */}
+                      {isFreeText && (
+                        <div>
+                          <input className="fi" disabled={podcastChecked}
+                            placeholder={q.type?.includes("completion") ? "Fill in the blank..." : "Your answer (max 3 words)..."}
+                            value={userAns}
+                            onChange={e=>setPodcastQAnswers(p=>{const a=[...p];a[qi]=e.target.value;return a;})}
+                            style={{fontSize:".9rem",fontFamily:"'Crimson Pro',serif"}}
+                          />
+                          {podcastChecked && (
+                            <div style={{marginTop:".4rem",fontSize:".82rem",fontFamily:"'Crimson Pro',serif",
+                              color:isCorrect?"#4ade80":"#fca5a5"}}>
+                              {isCorrect?"✅ Correct!":"❌ Answer: "+q.answer}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {isMulti && !podcastChecked && (
+                        <div style={{fontSize:".7rem",color:"#6a5a7a",marginTop:".3rem",fontStyle:"italic"}}>Select TWO answers</div>
+                      )}
+                    </div>
+                  );
+                })}
 
                 {!podcastChecked ? (
                   <button className="btn" onClick={()=>setPodcastChecked(true)}
@@ -4036,7 +4096,14 @@ function VocabApp({ apiKey }) {
                   <div className="fade-in" style={{textAlign:"center",padding:"1rem 1.2rem",borderRadius:14,background:"rgba(251,191,36,.07)",border:"1px solid rgba(251,191,36,.2)",marginBottom:".9rem"}}>
                     {(()=>{
                       const total = podcastEp.questions.length;
-                      const c = podcastQAnswers.filter((a,i)=>a===podcastEp.questions[i].answer).length;
+                      const c = podcastQAnswers.filter((a,i)=>{
+                        const q=podcastEp.questions[i];
+                        const isFree = !q.options||q.options.length===0;
+                        const isMulti = typeof q.answer==="string"&&q.answer.length===2&&/^[A-D]{2}$/.test(q.answer);
+                        if(isFree) return (a||"").trim().toLowerCase()===(q.answer||"").trim().toLowerCase();
+                        if(isMulti) return (a||"").split("").sort().join()===(q.answer||"").split("").sort().join();
+                        return a===q.answer;
+                      }).length;
                       const pct = Math.round(c/total*100);
                       const emoji = pct===100?"🏆":pct>=75?"🌟":pct>=50?"👍":"📻";
                       const band = pct===100?"Band 9":pct>=75?"Band 7-8":pct>=50?"Band 5-6":"Band dưới 5";
