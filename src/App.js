@@ -125,6 +125,89 @@ const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
 const MODES = { DAILY:"daily", ERRORS:"errors", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
+
+// ─── Google STT: Record audio and transcribe via proxy ────────────────────
+let _mediaRecorder = null;
+let _audioChunks   = [];
+
+function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false }) {
+  if (!navigator.mediaDevices?.getUserMedia) {
+    onError?.("Trình duyệt không hỗ trợ ghi âm"); return;
+  }
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    _audioChunks = [];
+    // Prefer opus for better compression; fallback to webm
+    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+      ? "audio/webm;codecs=opus" : "audio/webm";
+    const mr = new MediaRecorder(stream, { mimeType });
+    _mediaRecorder = mr;
+
+    mr.ondataavailable = e => { if (e.data.size > 0) _audioChunks.push(e.data); };
+
+    mr.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      onEnd?.();
+      if (_audioChunks.length === 0) { onError?.("Không nghe được gì"); return; }
+      const blob = new Blob(_audioChunks, { type: mimeType });
+      // Convert to base64
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const base64 = reader.result.split(",")[1];
+        try {
+          const res = await fetch("/api/stt", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ audio: base64 }),
+          });
+          if (!res.ok) throw new Error("STT proxy error " + res.status);
+          const data = await res.json();
+          onResult?.(data); // {transcript, confidence, words}
+        } catch(e) {
+          onError?.(e.message);
+        }
+      };
+      reader.readAsDataURL(blob);
+    };
+
+    mr.start(continuous ? 1000 : undefined); // collect chunks every 1s if continuous
+    onStart?.();
+
+    if (!continuous) {
+      // Auto-stop after silence detection (max 8s)
+      setTimeout(() => { if (mr.state === "recording") mr.stop(); }, 8000);
+    }
+  }).catch(err => onError?.("Không truy cập được microphone: " + err.message));
+}
+
+function stopGoogleSTT() {
+  if (_mediaRecorder && _mediaRecorder.state === "recording") {
+    _mediaRecorder.stop();
+  }
+}
+
+// Word-level pronunciation score using Google confidence
+function pronunciationScore(words, targetText) {
+  if (!words || words.length === 0) return { score: 0, wordScores: [] };
+  const targetWords = targetText.toLowerCase().trim().split(/\s+/);
+  const spokenWords  = words.map(w => w.word.toLowerCase().replace(/[^a-z']/g, ""));
+
+  const wordScores = targetWords.map((tw, i) => {
+    const sw = spokenWords[i];
+    const gConf = words[i]?.confidence || 0; // 0-1 from Google
+    if (!sw) return { word: tw, score: 0, status: "miss" };
+    if (sw === tw) return { word: tw, score: Math.round(gConf * 100), status: "ok" };
+    // partial match
+    let m = 0;
+    for (let j = 0; j < Math.min(sw.length, tw.length); j++) if (sw[j] === tw[j]) m++;
+    const similarity = m / Math.max(sw.length, tw.length);
+    const score = Math.round(gConf * similarity * 100);
+    return { word: tw, spoken: words[i]?.word, score, status: score >= 60 ? "ok" : "bad" };
+  });
+
+  const avg = wordScores.length ? Math.round(wordScores.reduce((a,b)=>a+b.score,0)/wordScores.length) : 0;
+  return { score: avg, wordScores };
+}
+
 // ─── TTS: Google Neural Voice with Web Speech fallback ───────────────────
 // Cache for ongoing audio to allow cancel
 let _ttsAudio = null;
@@ -2252,37 +2335,21 @@ function VocabApp({ apiKey }) {
           };
 
           const startListening = () => {
-            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SR) { setSpkResult({ error: "Trình duyệt không hỗ trợ ghi âm. Hãy dùng Chrome hoặc Safari." }); return; }
-            if (spkListening) { recognitionRef.current?.stop(); return; }
-
-            const rec = new SR();
-            recognitionRef.current = rec;
-            rec.lang = "en-US";
-            rec.continuous = false;
-            rec.interimResults = false;
-            rec.maxAlternatives = 3;
-
-            rec.onstart = () => setSpkListening(true);
-            rec.onend = () => setSpkListening(false);
-            rec.onerror = (e) => {
-              setSpkListening(false);
-              if (e.error !== "no-speech") setSpkResult({ error: "Lỗi ghi âm: " + e.error });
-            };
-            rec.onresult = (e) => {
-              // Pick best alternative
-              let best = "", bestScore = -1;
-              const target = spkMode === "word" ? spkWord.word : spkWord.example;
-              for (let i = 0; i < e.results[0].length; i++) {
-                const t = e.results[0][i].transcript;
-                const s = wordScore(t, target);
-                if (s > bestScore) { bestScore = s; best = t; }
-              }
-              const diff = charDiff(best, target);
-              setSpkResult({ transcript: best, score: bestScore, diff, target });
-              setSpkHistory(h => [{ word: spkWord.word, mode: spkMode, score: bestScore, ts: Date.now() }, ...h.slice(0, 14)]);
-            };
-            rec.start();
+            if (spkListening) { stopGoogleSTT(); return; }
+            const target = spkMode === "word" ? spkWord.word : spkWord.example;
+            startGoogleSTT({
+              onStart: () => setSpkListening(true),
+              onEnd:   () => setSpkListening(false),
+              onError: (msg) => { setSpkListening(false); setSpkResult({ error: msg }); },
+              onResult: (data) => {
+                const { transcript, words } = data;
+                if (!transcript) { setSpkResult({ error: "Không nghe được, thử lại nhé!" }); return; }
+                const { score, wordScores } = pronunciationScore(words||[], target);
+                const diff = wordScores.map(w => ({ word:w.word, spoken:w.spoken, status:w.status }));
+                setSpkResult({ transcript, score, diff, target, wordScores });
+                setSpkHistory(h => [{ word:spkWord.word, mode:spkMode, score, ts:Date.now() }, ...h.slice(0,14)]);
+              },
+            });
           };
 
           if (!spkWord) return (
@@ -2538,84 +2605,40 @@ function VocabApp({ apiKey }) {
             convoResultPending.current = false;
           };
 
-          // Start listening — continuous mode, user presses stop when done
+          // Start listening — Google STT, user presses stop when done
           const listenUser = () => {
-            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SR) { alert("Trình duyệt không hỗ trợ. Dùng Chrome hoặc Safari."); return; }
-            if (convoListening) { stopListening(); return; }
-
+            if (convoListening) { stopGoogleSTT(); return; }
             convoResultPending.current = false;
-            const rec = new SR();
-            convoRecRef.current = rec;
-
-            // continuous: true so it keeps listening until user stops
-            rec.lang = "en-US";
-            rec.continuous = true;
-            rec.interimResults = true;   // show interim so user sees feedback
-            rec.maxAlternatives = 1;
-
-            // Accumulate ALL recognized speech — never reset between onresult calls
-            let accumulatedFinal = "";
-            let currentInterim   = "";
-
-            rec.onstart = () => {
-              setConvoListening(true);
-              accumulatedFinal = "";
-              currentInterim   = "";
-              setConvoLiveText("");
-            };
-
-            rec.onend = () => {
-              setConvoListening(false);
-              const fullText = (accumulatedFinal + " " + currentInterim).trim();
-              if (!fullText || convoResultPending.current) return;
-              convoResultPending.current = true;
-
-              const turnIdx = convoTurnRef.current;
-              const script  = convoScriptRef.current;
-              if (!script || turnIdx >= script.turns.length) return;
-              const turn = script.turns[turnIdx];
-              if (!turn || turn.role !== "user") return;
-
-              const ideal    = turn.ideal || "";
-              const score    = wordScore(fullText, ideal);
-              const diff     = charDiff(fullText, ideal);
-              const logEntry = {role:"user", text:turn.prompt, userSaid:fullText, ideal, score, diff};
-
-              convoLogRef.current = [...convoLogRef.current, logEntry];
-              setConvoLog([...convoLogRef.current]);
-              setConvoLiveText("");
-
-              const nextIdx = turnIdx + 1;
-              convoTurnRef.current = nextIdx;
-              setConvoTurn(nextIdx);
-
-              if (nextIdx < script.turns.length && script.turns[nextIdx]?.role === "ai") {
-                setTimeout(() => advanceAI(nextIdx), 700);
-              }
-            };
-
-            rec.onerror = (e) => {
-              if (e.error === "no-speech" || e.error === "aborted") return;
-              setConvoListening(false);
-            };
-
-            rec.onresult = (e) => {
-              // Key fix: iterate from 0 to accumulate ALL results, not just new ones
-              accumulatedFinal = "";
-              currentInterim   = "";
-              for (let i = 0; i < e.results.length; i++) {
-                if (e.results[i].isFinal) {
-                  accumulatedFinal += e.results[i][0].transcript + " ";
-                } else {
-                  currentInterim += e.results[i][0].transcript;
+            setConvoLiveText("");
+            startGoogleSTT({
+              onStart: () => setConvoListening(true),
+              onEnd:   () => setConvoListening(false),
+              onError: () => setConvoListening(false),
+              onResult: (data) => {
+                if (convoResultPending.current) return;
+                convoResultPending.current = true;
+                const fullText = data.transcript?.trim() || "";
+                setConvoLiveText("");
+                const turnIdx = convoTurnRef.current;
+                const script  = convoScriptRef.current;
+                if (!script || turnIdx >= script.turns.length) return;
+                const turn = script.turns[turnIdx];
+                if (!turn || turn.role !== "user") return;
+                const ideal = turn.ideal || "";
+                const { score, wordScores } = pronunciationScore(data.words||[], ideal);
+                const diff = wordScores.map(w=>({word:w.word,spoken:w.spoken,status:w.status}));
+                const logEntry = {role:"user",text:turn.prompt,userSaid:fullText,ideal,score,diff};
+                convoLogRef.current = [...convoLogRef.current, logEntry];
+                setConvoLog([...convoLogRef.current]);
+                const nextIdx = turnIdx+1;
+                convoTurnRef.current = nextIdx;
+                setConvoTurn(nextIdx);
+                if (nextIdx < script.turns.length && script.turns[nextIdx]?.role==="ai") {
+                  setTimeout(()=>advanceAI(nextIdx), 700);
                 }
-              }
-              setConvoLiveText((accumulatedFinal + currentInterim).trim());
-            };
-
-            rec.start();
-          };
+              },
+            });
+          };      };
 
           // Generate new script
           const startConvo = async () => {
@@ -3027,21 +3050,18 @@ function VocabApp({ apiKey }) {
           };
 
           const startSpeak = () => {
-            const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SR) return;
-            if (dailySpeakListening) { dailySpeakRecRef.current?.stop(); return; }
-            const rec = new SR();
-            dailySpeakRecRef.current = rec;
-            rec.lang="en-US"; rec.continuous=false; rec.interimResults=false; rec.maxAlternatives=3;
-            rec.onstart = () => setDailySpeakListening(true);
-            rec.onend   = () => setDailySpeakListening(false);
-            rec.onresult = (e) => {
-              let best="", bestScore=-1;
-              const target = dailyChallenge?.speakSentence||"";
-              for(let i=0;i<e.results[0].length;i++){const t=e.results[0][i].transcript;const s=wordScore(t,target);if(s>bestScore){bestScore=s;best=t;}}
-              setDailySpeakResult({transcript:best,score:bestScore});
-            };
-            rec.start();
+            if (dailySpeakListening) { stopGoogleSTT(); return; }
+            const target = dailyChallenge?.speakSentence || "";
+            startGoogleSTT({
+              onStart: () => setDailySpeakListening(true),
+              onEnd:   () => setDailySpeakListening(false),
+              onError: () => setDailySpeakListening(false),
+              onResult: (data) => {
+                const { transcript, words } = data;
+                const { score, wordScores } = pronunciationScore(words||[], target);
+                setDailySpeakResult({ transcript: transcript||"", score, wordScores });
+              },
+            });
           };
 
           // ── INTRO / DONE SCREEN ────────────────────────────────────────
@@ -3570,20 +3590,17 @@ function VocabApp({ apiKey }) {
             speak(cur.sentence, rate||0.75);
             const est = Math.max(2000, cur.sentence.length*78);
             setTimeout(() => {
-              const SR = window.SpeechRecognition||window.webkitSpeechRecognition;
-              if (!SR) return;
-              const rec = new SR();
-              shadowRecRef.current = rec;
-              rec.lang="en-US"; rec.continuous=false; rec.interimResults=false; rec.maxAlternatives=3;
-              rec.onstart = ()=>setShadowListening(true);
-              rec.onend   = ()=>setShadowListening(false);
-              rec.onresult = (e)=>{
-                let best="",bestScore=-1;
-                for(let i=0;i<e.results[0].length;i++){const t=e.results[0][i].transcript;const s=wordScore(t,cur.sentence);if(s>bestScore){bestScore=s;best=t;}}
-                setShadowResult({transcript:best,score:bestScore});
-                setShadowScore(prev=>({total:prev.total+bestScore,count:prev.count+1}));
-              };
-              rec.start();
+              startGoogleSTT({
+                onStart: () => setShadowListening(true),
+                onEnd:   () => setShadowListening(false),
+                onError: () => setShadowListening(false),
+                onResult: (data) => {
+                  const { transcript, words } = data;
+                  const { score, wordScores } = pronunciationScore(words||[], cur.sentence);
+                  setShadowResult({ transcript: transcript||"", score, wordScores });
+                  setShadowScore(prev=>({total:prev.total+score,count:prev.count+1}));
+                },
+              });
             }, est);
           };
 
