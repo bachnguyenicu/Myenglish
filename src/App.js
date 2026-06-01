@@ -4037,13 +4037,24 @@ function VocabApp({ apiKey }) {
                       setPodcastPlaying(true);
                       const script = podcastEp.script;
 
-                      // Play lines sequentially using Google TTS
-                      // Speaker A: en-US-Neural2-D (male), Speaker B: en-US-Neural2-F (female)
-                      const playLine = async (idx) => {
-                        if (idx >= script.length) { setPodcastPlaying(false); return; }
+                      // iOS-compatible sequential playback using AudioContext
+                      // Prevents autoplay policy blocking after first line
+                      let _podcastCtx = null;
+                      let _podcastStopped = false;
+
+                      const playLineIOS = async (idx) => {
+                        if (_podcastStopped || idx >= script.length) {
+                          setPodcastPlaying(false);
+                          if (_podcastCtx) { _podcastCtx.close(); _podcastCtx = null; }
+                          return;
+                        }
                         const {speaker, line} = script[idx];
                         const voice = speaker === "A" ? "en-US-Neural2-D" : "en-US-Neural2-F";
                         const rate  = speaker === "A" ? 0.95 : 0.9;
+
+                        // Keep reference for stop button
+                        _ttsAudio = { pause: () => { _podcastStopped = true; if(_podcastCtx){_podcastCtx.close();_podcastCtx=null;} } };
+
                         try {
                           const res = await fetch("/api/tts", {
                             method:"POST",
@@ -4052,22 +4063,42 @@ function VocabApp({ apiKey }) {
                           });
                           if (!res.ok) throw new Error("TTS error");
                           const { audio } = await res.json();
-                          const el = new Audio("data:audio/mp3;base64," + audio);
-                          _ttsAudio = el;
-                          el.onended = () => setTimeout(() => playLine(idx+1), 400);
-                          el.onerror = () => setTimeout(() => playLine(idx+1), 400);
-                          await el.play();
+                          if (_podcastStopped) return;
+
+                          // Decode base64 → ArrayBuffer
+                          const binary = atob(audio);
+                          const bytes  = new Uint8Array(binary.length);
+                          for (let i=0;i<binary.length;i++) bytes[i]=binary.charCodeAt(i);
+
+                          // Use AudioContext — works on iOS after user gesture
+                          if (!_podcastCtx || _podcastCtx.state === "closed") {
+                            _podcastCtx = new (window.AudioContext || window.webkitAudioContext)();
+                          }
+                          if (_podcastCtx.state === "suspended") await _podcastCtx.resume();
+
+                          const audioBuffer = await _podcastCtx.decodeAudioData(bytes.buffer);
+                          if (_podcastStopped) return;
+
+                          const source = _podcastCtx.createBufferSource();
+                          source.buffer = audioBuffer;
+                          source.connect(_podcastCtx.destination);
+                          source.onended = () => {
+                            if (!_podcastStopped) setTimeout(() => playLineIOS(idx+1), 350);
+                          };
+                          source.start(0);
+
                         } catch(e) {
-                          // fallback: Web Speech for this line then continue
+                          // Fallback: Web Speech API
+                          if (_podcastStopped) return;
                           const u = new SpeechSynthesisUtterance(line);
-                          u.lang="en-US";
-                          u.rate = rate;
+                          u.lang="en-US"; u.rate=rate;
                           u.pitch = speaker==="A" ? 1.1 : 0.85;
-                          u.onend = () => setTimeout(()=>playLine(idx+1), 350);
+                          u.onend = () => { if(!_podcastStopped) setTimeout(()=>playLineIOS(idx+1), 350); };
                           window.speechSynthesis.speak(u);
                         }
                       };
-                      playLine(0);
+                      _podcastStopped = false;
+                      playLineIOS(0);
                     }}
                     style={{width:72,height:72}}>
                     {podcastPlaying?"⏹":"▶️"}
