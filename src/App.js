@@ -520,12 +520,12 @@ Return ONLY a JSON object. Critical rules:
 - Arrays can be empty []
 
 JSON structure:
-{"overallScore":7,"wordUsed":true,"wordUsedCorrectly":true,"correctedSentence":"the corrected sentence","spellingErrors":[{"wrong":"wrng","correct":"wrong","tip":"spelling tip"}],"grammarErrors":[{"error":"bad form","correction":"good form","rule":"quy tac bang tieng Viet"}],"styleAdvice":"loi khuyen van phong bang tieng Viet","lessons":[{"title":"Ten bai hoc","explanation":"Giai thich bang tieng Viet, khong dung dau ngoac kep","example":"An example sentence."}],"encouragement":"Loi dong vien bang tieng Viet."}`;
+{"overallScore":7,"wordUsed":true,"wordUsedCorrectly":true,"correctedSentence":"the corrected sentence","spellingErrors":[{"wrong":"wrng","correct":"wrong","tip":"spelling tip"}],"grammarErrors":[{"error":"bad form","correction":"good form","rule":"quy tắc ngữ pháp tiếng Việt"}],"styleAdvice":"lời khuyên văn phong tiếng Việt","lessons":[{"title":"Ten bai hoc","explanation":"Giải thích ngắn bằng tiếng Việt","example":"An example sentence."}],"encouragement":"Lời động viên bằng tiếng Việt."}`;
 
   const data = await anthropicFetch(apiKey, {
     model: "claude-haiku-4-5-20251001",
     max_tokens: 1500,
-    system: "You are an English writing coach. Output ONLY a single-line compact JSON object. Never put double-quote characters inside JSON string values — use single quotes or reword instead. Never add markdown.",
+    system: "You are an English writing coach. Output ONLY a single-line compact JSON object. Never put double-quote characters inside JSON string values — use single quotes or reword instead. Never add markdown. Write all Vietnamese text with full diacritics (e.g. tiếng Việt, không phải tieng Viet).",
     messages: [{ role: "user", content: prompt }]
   });
   const raw = (data.content || []).map(b => b.text || "").join("").trim();
@@ -612,7 +612,7 @@ For each user turn, provide:
 4. One specific tip
 
 Reply ONLY with raw JSON (no markdown, no unescaped quotes inside strings):
-{"overallScore":75,"summary":"tong ket bang tieng Viet","turns":[{"turnIndex":1,"said":"what they said","refined":"more natural version","grammarNote":"grammar fix or empty string","pronunciationTip":"one phonetic tip","score":80}]}`;
+{"overallScore":75,"summary":"tổng kết bằng tiếng Việt","turns":[{"turnIndex":1,"said":"what they said","refined":"more natural version","grammarNote":"ghi chú ngữ pháp","pronunciationTip":"mẹo phát âm","score":80}]}`;
 
   const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1200,
     system:"You are an English conversation coach. Output ONLY compact single-line JSON. Never use unescaped double quotes inside string values.",
@@ -765,17 +765,17 @@ Reply ONLY with raw JSON. No markdown. No unescaped double-quote characters insi
 {
   "score": 7,
   "correctedSentence": "fully corrected version of their entry",
-  "grammarErrors": [{"error": "bad phrase", "correction": "good phrase", "rule": "quy tac ngu phap bang tieng Viet"}],
-  "styleAdvice": "loi khuyen van phong bang tieng Viet, 1-2 cau",
+  "grammarErrors": [{"error": "bad phrase", "correction": "good phrase", "rule": "quy tac ngu phap bằng tiếng Việt có dấu"}],
+  "styleAdvice": "loi khuyen van phong bằng tiếng Việt có dấu, 1-2 cau",
   "lessons": [
-    {"title": "Ten bai hoc tieng Viet", "explanation": "Giai thich ngan bang tieng Viet", "example": "An example sentence."}
+    {"title": "Tên bài học tiếng Việt", "explanation": "Giải thích ngắn bằng tiếng Việt có dấu", "example": "An example sentence."}
   ],
-  "encouragement": "1 cau dong vien bang tieng Viet"
+  "encouragement": "1 cau dong vien bằng tiếng Việt có dấu"
 }
 Rules: grammarErrors can be empty []. lessons: 1-2 items focused on most important issues.`;
 
   const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
-    system:"You are an English writing coach. Output ONLY compact single-line JSON. Never use unescaped double-quote characters inside string values.",
+    system:"You are an English writing coach. Output ONLY compact single-line JSON. Never use unescaped double-quote characters inside string values. Write all Vietnamese text with full diacritics.",
     messages:[{role:"user",content:p}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   let r;
@@ -818,7 +818,7 @@ Evaluate TWO things:
 2. Does the sentence have any OTHER grammar or spelling mistakes?
 
 Reply ONLY with raw JSON, no markdown, no unescaped double quotes in strings:
-{"targetFixed": true, "otherErrors": [{"wrong": "Nowaday", "correct": "Nowadays", "note": "ghi chu ngan"}], "corrected": "fully corrected version of the sentence", "feedback": "nhan xet ngan bang tieng Viet"}
+{"targetFixed": true, "otherErrors": [{"wrong": "Nowaday", "correct": "Nowadays", "note": "ghi chú ngắn"}], "corrected": "fully corrected version of the sentence", "feedback": "nhận xét ngắn bằng tiếng Việt có dấu"}
 
 Rules:
 - targetFixed: true only if the main grammar rule is correctly applied
@@ -1018,7 +1018,7 @@ Reply ONLY with JSON (use single quotes inside strings):
 
   const data = await anthropicFetch(apiKey, {
     model:"claude-haiku-4-5-20251001", max_tokens:1000,
-    system:"IELTS examiner. Output ONLY compact single-line JSON. No unescaped double quotes in strings.",
+    system:"IELTS examiner. Output ONLY compact single-line JSON. No unescaped double quotes in strings. Write all Vietnamese text with full diacritics.",
     messages:[{role:"user",content:prompt}]
   });
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
