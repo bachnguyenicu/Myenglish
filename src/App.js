@@ -955,8 +955,46 @@ Reply ONLY with JSON:
     messages:[{role:"user",content:prompt}]
   });
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  try { return repairAndParseJSON(raw); }
-  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Lỗi tạo script"); }
+  let parsed;
+  try { parsed = repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) { try { parsed=JSON.parse(m[0]); } catch{} } }
+  if (!parsed) throw new Error("Lỗi tạo script");
+
+  // Normalise — handle varied field names from AI
+  const p1qs = parsed.part1?.questions || parsed.part1?.q || [];
+  const p2cc = parsed.part2?.cueCard || parsed.part2?.cue_card || parsed.part2?.card || parsed.part2?.task || "";
+  const p3qs = parsed.part3?.questions || parsed.part3?.q || [];
+
+  // Validate minimums — use fallbacks if AI skipped fields
+  return {
+    topic: parsed.topic || chosenTopic,
+    part1: {
+      questions: Array.isArray(p1qs) && p1qs.length > 0 ? p1qs : [
+        "Do you work or are you a student?",
+        `Do you enjoy learning about ${chosenTopic}? Why?`,
+        "What do you usually do in your free time?",
+        "How has your daily routine changed recently?"
+      ]
+    },
+    part2: {
+      cueCard: p2cc || `Describe something related to ${chosenTopic} that has influenced you.
+
+You should say:
+• what it is
+• when you first experienced it
+• why it is important to you
+
+And explain how it has affected your life.`,
+    },
+    part3: {
+      questions: Array.isArray(p3qs) && p3qs.length > 0 ? p3qs : [
+        `How important is ${chosenTopic} in modern society?`,
+        `How have attitudes towards ${chosenTopic} changed over time?`,
+        `What role should governments play regarding ${chosenTopic}?`,
+        `How do you think ${chosenTopic} will develop in the future?`
+      ]
+    }
+  };
 }
 
 // ─── Claude API — Grade IELTS Speaking ───────────────────────────────────
