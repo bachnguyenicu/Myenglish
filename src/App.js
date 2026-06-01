@@ -242,8 +242,25 @@ function pronunciationScore(words, targetText) {
 }
 
 // ─── TTS: Google Neural Voice with Web Speech fallback ───────────────────
-// Cache for ongoing audio to allow cancel
+// Shared AudioContext — created once, reused for all TTS (iOS compatible)
 let _ttsAudio = null;
+let _sharedAudioCtx = null;
+
+function getAudioCtx() {
+  if (!_sharedAudioCtx || _sharedAudioCtx.state === "closed") {
+    _sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  return _sharedAudioCtx;
+}
+
+// Stop any currently playing TTS
+function stopSpeak() {
+  if (_ttsAudio) {
+    try { _ttsAudio.stop(); } catch(_) {}
+    _ttsAudio = null;
+  }
+  window.speechSynthesis?.cancel();
+}
 
 function speakFallback(text, rate=0.92) {
   // Original Web Speech API fallback
@@ -261,27 +278,36 @@ function speakFallback(text, rate=0.92) {
   window.speechSynthesis.speak(u);
 }
 
-async function speak(text, rate=0.92) {
+async function speak(text, rate=0.92, voice=null) {
   if (!text?.trim()) return;
-  // Stop any current audio
-  if (_ttsAudio) { _ttsAudio.pause(); _ttsAudio = null; }
-  window.speechSynthesis?.cancel();
+  stopSpeak();
 
   try {
     const res = await fetch("/api/tts", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text.trim(), rate }),
+      body: JSON.stringify({ text: text.trim(), rate, ...(voice ? {voice} : {}) }),
     });
     if (!res.ok) throw new Error("TTS proxy error");
     const { audio } = await res.json();
     if (!audio) throw new Error("No audio");
 
-    // Play base64 MP3
-    const audioSrc = "data:audio/mp3;base64," + audio;
-    const audioEl = new Audio(audioSrc);
-    _ttsAudio = audioEl;
-    audioEl.play().catch(() => speakFallback(text, rate));
+    // Decode base64 → ArrayBuffer → AudioContext (works on iOS)
+    const binary = atob(audio);
+    const bytes  = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+    const ctx = getAudioCtx();
+    if (ctx.state === "suspended") await ctx.resume();
+
+    const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
+    const source = ctx.createBufferSource();
+    source.buffer = audioBuffer;
+    source.connect(ctx.destination);
+    _ttsAudio = source;
+    source.onended = () => { _ttsAudio = null; };
+    source.start(0);
+
   } catch(e) {
     // Fallback to Web Speech if Google TTS unavailable
     speakFallback(text, rate);
@@ -4029,8 +4055,7 @@ function VocabApp({ apiKey }) {
                   <button className={`mic-btn btn ${podcastPlaying?"speak-pulse":"idle"}`}
                     onClick={async()=>{
                       if(podcastPlaying){
-                        if(_ttsAudio){_ttsAudio.pause();_ttsAudio=null;}
-                        window.speechSynthesis?.cancel();
+                        stopSpeak();
                         setPodcastPlaying(false);
                         return;
                       }
@@ -4072,7 +4097,7 @@ function VocabApp({ apiKey }) {
 
                           // Use AudioContext — works on iOS after user gesture
                           if (!_podcastCtx || _podcastCtx.state === "closed") {
-                            _podcastCtx = new (window.AudioContext || window.webkitAudioContext)();
+                            _podcastCtx = getAudioCtx();
                           }
                           if (_podcastCtx.state === "suspended") await _podcastCtx.resume();
 
