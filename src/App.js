@@ -960,43 +960,31 @@ Reply ONLY with JSON:
 }
 
 // ─── Claude API — Grade IELTS Speaking ───────────────────────────────────
-async function gradeSpkSim(script, answers, apiKey) {
-  const transcript = answers.map((a,i) =>
-    `Q: ${a.q}\nA: "${a.answer}" (${a.duration}s)`
-  ).join("\n\n");
+async function gradeSpkSim(partNum, answers, cueCard, apiKey) {
+  const partDesc = partNum===1
+    ? "Part 1 (Introduction & Interview)"
+    : partNum===2 ? "Part 2 (Individual Long Turn — cue card)"
+    : "Part 3 (Two-way Discussion)";
+  const transcript = answers.map((a,i)=>`Q${i+1}: ${a.q}\nAnswer: "${a.answer}" (${a.duration}s)`).join("\n\n");
+  const isP2 = partNum===2;
 
-  const prompt = `You are a certified IELTS examiner. Grade this speaking test strictly.
+  const prompt = `You are a certified IELTS examiner. Grade this ${partDesc} response.
+${isP2 && cueCard ? `CUE CARD: ${cueCard}\n` : ""}TRANSCRIPT:\n${transcript}
 
-TOPIC: ${script.topic}
-FULL TRANSCRIPT:
-${transcript}
-
-Grade each criterion 0-9 (use .5). Be realistic — most Vietnamese learners score 5-6.5.
-
-Reply ONLY with JSON (no unescaped double quotes in strings):
-{
-  "overallBand": 6.0,
-  "criteria": {
-    "fluencyCoherence": {"band": 6.0, "comment": "specific feedback"},
-    "lexicalResource":  {"band": 6.0, "comment": "specific feedback"},
-    "grammaticalRange": {"band": 5.5, "comment": "specific feedback"},
-    "pronunciation":    {"band": 6.0, "comment": "specific feedback on clarity and accent"}
-  },
-  "strongAnswers": ["best answer quote (first 8 words)..."],
-  "weakAnswers":   ["weakest answer quote..."],
-  "improvements":  ["specific tip 1", "specific tip 2", "specific tip 3"],
-  "modelAnswer":   "A model answer for the Part 2 cue card (3-4 sentences)"
-}`;
+Grade strictly. Use 0.5 increments. Most Vietnamese learners score 5-6.5.
+Reply ONLY with JSON (use single quotes inside strings):
+{"overallBand":6.0,"criteria":{"fluencyCoherence":{"band":6.0,"comment":"feedback"},"lexicalResource":{"band":6.0,"comment":"feedback"},"grammaticalRange":{"band":5.5,"comment":"feedback"},"pronunciation":{"band":6.0,"comment":"feedback"}},"improvements":["tip 1","tip 2","tip 3"]${isP2?',"modelAnswer":"4-5 sentence model answer band 7-8"':''}}`;
 
   const data = await anthropicFetch(apiKey, {
-    model:"claude-haiku-4-5-20251001", max_tokens:900,
-    system:"You are a strict IELTS examiner. Output ONLY compact JSON. No unescaped double quotes inside strings.",
+    model:"claude-haiku-4-5-20251001", max_tokens:1000,
+    system:"IELTS examiner. Output ONLY compact single-line JSON. No unescaped double quotes in strings.",
     messages:[{role:"user",content:prompt}]
   });
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   try { return repairAndParseJSON(raw); }
   catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
 }
+
 
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
@@ -1063,23 +1051,23 @@ function VocabApp({ apiKey }) {
   const [ieltsHistory, setIeltsHistory] = useState(() => loadState("lx_ielts_w", []));
   const [ieltsView, setIeltsView] = useState("write"); // write | history
   const [ieltsTaskType, setIeltsTaskType] = useState("random");
-  // IELTS Speaking
-  const [spkSimScript, setSpkSimScript]   = useState(null);  // full 3-part script
-  const [spkSimPart, setSpkSimPart]       = useState(0);     // 0=setup, 1,2,3=parts, 4=review
-  const [spkSimQIdx, setSpkSimQIdx]       = useState(0);     // question index within part
-  const [spkSimAnswers, setSpkSimAnswers] = useState([]);    // [{part,q,answer,duration}]
+  // IELTS Speaking — per-part independent flow
+  const [spkSimTopic,   setSpkSimTopic]   = useState("");
+  const [spkSimPhase,   setSpkSimPhase]   = useState("menu"); // menu|p1|p2|p3|review
+  const [spkSimPartNum, setSpkSimPartNum] = useState(0);
+  const [spkSimQs,      setSpkSimQs]      = useState([]);   // questions for current part
+  const [spkSimQIdx,    setSpkSimQIdx]    = useState(0);
+  const [spkSimAnswers, setSpkSimAnswers] = useState([]);
   const [spkSimListening, setSpkSimListening] = useState(false);
-  const [spkSimTimer, setSpkSimTimer]     = useState(0);     // seconds recording
-  const [spkSimResult, setSpkSimResult]   = useState(null);
+  const [spkSimTimer,   setSpkSimTimer]   = useState(0);
+  const [spkSimResult,  setSpkSimResult]  = useState(null);
   const [spkSimLoading, setSpkSimLoading] = useState(false);
   const [spkSimGenLoading, setSpkSimGenLoading] = useState(false);
   const [spkSimLiveText, setSpkSimLiveText] = useState("");
-  const [spkSimTopic, setSpkSimTopic]     = useState("");
-  const [spkSimTimerInterval, setSpkSimTimerInterval] = useState(null);
-  const spkSimRecRef = useRef(null);
-  const spkSimPartRef  = useRef(0);
+  const [spkSimCueCard, setSpkSimCueCard] = useState("");
   const spkSimQIdxRef  = useRef(0);
-  const spkSimTimerRef = useRef(0); // Error Bank practice: {id: {input, checked}}
+  const spkSimTimerRef = useRef(0);
+  const spkSimTimerIv  = useRef(null); // Error Bank practice: {id: {input, checked}}
   // Daily Challenge
   const [dailyProgress, setDailyProgress] = useState(() => loadState("lx_daily", null));
   const [dailyChallenge, setDailyChallenge] = useState(null);
@@ -5061,311 +5049,285 @@ function VocabApp({ apiKey }) {
 
 
         {/* ══ IELTS SPEAKING SIMULATOR ══ */}
-        {mode===MODES.IELTS_S && (() => {
+        {mode===MODES.IELTS_S && (()=>{
 
-          const partColors = ["","#60a5fa","#fbbf24","#a78bfa"];
-          const partLabels = ["","Part 1","Part 2","Part 3"];
-          // Keep refs in sync with state
-          spkSimPartRef.current  = spkSimPart;
-          spkSimQIdxRef.current  = spkSimQIdx;
-          spkSimTimerRef.current = spkSimTimer;
-
-          const currentPart = spkSimScript ? (
-            spkSimPart===1 ? spkSimScript.part1 :
-            spkSimPart===2 ? spkSimScript.part2 :
-            spkSimPart===3 ? spkSimScript.part3 : null
-          ) : null;
-
-          const currentQ = spkSimPart===1 ? spkSimScript?.part1?.questions?.[spkSimQIdx] :
-                           spkSimPart===3 ? spkSimScript?.part3?.questions?.[spkSimQIdx] : null;
-
-          // Start recording
-          const startRec = () => {
+          // ── Shared recording logic (no stale closure — uses refs) ─────────
+          const startPartRec = () => {
             if (spkSimListening) { stopGoogleSTT(); return; }
-            let secs = 0;
-            setSpkSimTimer(0); spkSimTimerRef.current = 0;
-            const iv = setInterval(() => { secs++; spkSimTimerRef.current=secs; setSpkSimTimer(secs); }, 1000);
-            setSpkSimTimerInterval(iv);
+            let secs = 0; spkSimTimerRef.current = 0;
+            setSpkSimTimer(0); setSpkSimLiveText("");
+            clearInterval(spkSimTimerIv.current);
+            spkSimTimerIv.current = setInterval(()=>{ secs++; spkSimTimerRef.current=secs; setSpkSimTimer(secs); }, 1000);
 
             startGoogleSTT({
-              onStart: () => setSpkSimListening(true),
-              onEnd:   () => { setSpkSimListening(false); clearInterval(iv); },
-              onError: () => { setSpkSimListening(false); clearInterval(iv); },
-              onResult: (data) => {
-                const transcript = data.transcript?.trim() || "(không nghe được)";
-                setSpkSimLiveText("");
-                // Use refs — always fresh, no stale closure
-                const dur  = spkSimTimerRef.current;
-                const part = spkSimPartRef.current;
+              onStart: ()=>setSpkSimListening(true),
+              onEnd:   ()=>{ setSpkSimListening(false); clearInterval(spkSimTimerIv.current); },
+              onError: ()=>{ setSpkSimListening(false); clearInterval(spkSimTimerIv.current); },
+              onResult:(data)=>{
+                clearInterval(spkSimTimerIv.current);
+                const transcript = data.transcript?.trim()||"(không nghe được)";
                 const qIdx = spkSimQIdxRef.current;
-                const script = spkSimScript;
-                const q = part===2 ? script.part2.cueCard :
-                          part===1 ? (script.part1.questions[qIdx]||"") :
-                          (script.part3.questions[qIdx]||"");
-
-                setSpkSimAnswers(prev => [...prev, { part, q, answer: transcript, duration: dur }]);
-
-                // Advance — update refs immediately so next call is correct
-                if (part===1) {
-                  const qs = script.part1.questions;
-                  if (qIdx+1 < qs.length) {
+                const dur  = spkSimTimerRef.current;
+                const q    = spkSimQs[qIdx]||"";
+                const entry = {q, answer:transcript, duration:dur};
+                setSpkSimAnswers(prev=>{
+                  const next=[...prev, entry];
+                  // Check if done
+                  const totalQs = spkSimPhase==="p2"?1:spkSimQs.length;
+                  if(next.length>=totalQs){
+                    setTimeout(()=>setSpkSimPhase("review"),300);
+                  } else {
                     spkSimQIdxRef.current = qIdx+1;
                     setSpkSimQIdx(qIdx+1);
-                  } else {
-                    spkSimPartRef.current = 2;
-                    spkSimQIdxRef.current = 0;
-                    setSpkSimPart(2);
-                    setSpkSimQIdx(0);
                   }
-                } else if (part===2) {
-                  spkSimPartRef.current = 3;
-                  spkSimQIdxRef.current = 0;
-                  setSpkSimPart(3);
-                  setSpkSimQIdx(0);
-                } else if (part===3) {
-                  const qs = script.part3.questions;
-                  if (qIdx+1 < qs.length) {
-                    spkSimQIdxRef.current = qIdx+1;
-                    setSpkSimQIdx(qIdx+1);
-                  } else {
-                    spkSimPartRef.current = 4;
-                    setSpkSimPart(4);
-                  }
-                }
-              },
+                  return next;
+                });
+              }
             });
           };
 
-          // ── SETUP ───────────────────────────────────────────────────────
-          if (spkSimPart===0) return (
+          const resetPart = ()=>{ setSpkSimAnswers([]); setSpkSimQIdx(0); spkSimQIdxRef.current=0; setSpkSimResult(null); setSpkSimLiveText(""); setSpkSimTimer(0); };
+          const goMenu = ()=>{ resetPart(); setSpkSimPhase("menu"); setSpkSimPartNum(0); };
+
+          const partColor = {p1:"#60a5fa",p2:"#fbbf24",p3:"#a78bfa"};
+          const col = partColor[spkSimPhase]||"#a78bfa";
+
+          // ── MENU ─────────────────────────────────────────────────────────
+          if(spkSimPhase==="menu") return (
             <div>
               <div style={{background:"linear-gradient(145deg,rgba(96,165,250,.07),rgba(167,139,250,.05))",border:"1px solid rgba(96,165,250,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
                 <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#93c5fd",marginBottom:".25rem"}}>🎙 IELTS Speaking Simulator</div>
-                <div style={{fontSize:".83rem",color:"#7a8a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
-                  Mô phỏng bài thi IELTS Speaking thật — Part 1, 2, 3. Nói câu trả lời, AI chấm band score theo 4 tiêu chí.
-                </div>
-                <div style={{display:"flex",gap:".6rem",marginTop:".7rem",flexWrap:"wrap"}}>
-                  {["🗣 Part 1: 4-5 câu hỏi ngắn","📋 Part 2: Cue card 2 phút","💬 Part 3: Thảo luận sâu"].map((t,i)=>(
-                    <span key={i} style={{fontSize:".75rem",color:partColors[i+1],background:partColors[i+1]+"18",border:`1px solid ${partColors[i+1]}33`,borderRadius:999,padding:".2rem .75rem"}}>{t}</span>
-                  ))}
-                </div>
+                <div style={{fontSize:".83rem",color:"#7a8a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>Chọn Part muốn luyện. Sau mỗi part AI chấm band score + tips cải thiện riêng.</div>
               </div>
 
               <div style={{marginBottom:".8rem"}}>
                 <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Chủ đề (để trống = AI tự chọn)</div>
-                <input className="fi" placeholder="vd: technology, environment, education, travel..."
-                  value={spkSimTopic} onChange={e=>setSpkSimTopic(e.target.value)}
-                  onKeyDown={e=>e.key==="Enter"&&!spkSimGenLoading&&document.getElementById("spk-sim-btn")?.click()} />
+                <input className="fi" placeholder="vd: technology, environment, education..."
+                  value={spkSimTopic} onChange={e=>setSpkSimTopic(e.target.value)} />
               </div>
 
-              {spkSimGenLoading ? (
-                <div>{[80,60,70,50].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:9,width:`${w}%`}}/>)}</div>
-              ) : (
-                <button id="spk-sim-btn" className="btn" onClick={async()=>{
-                  setSpkSimGenLoading(true);
-                  setSpkSimAnswers([]); setSpkSimResult(null); setSpkSimQIdx(0);
-                  try {
-                    const s = await generateSpkScript(spkSimTopic.trim(), apiKey);
-                    setSpkSimScript(s);
-                    setSpkSimPart(1);
-                  } catch(e){ alert("Lỗi: "+e.message); }
-                  finally { setSpkSimGenLoading(false); }
-                }} style={{width:"100%",padding:".9rem",borderRadius:14,background:"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
-                  🎙 Bắt đầu thi
-                </button>
-              )}
+              <div style={{display:"flex",flexDirection:"column",gap:".7rem"}}>
+                {[
+                  {ph:"p1",num:1,col:"#60a5fa",title:"Part 1 — Introduction",desc:"4 câu hỏi ngắn về bản thân, sở thích, cuộc sống hàng ngày",time:"4-5 phút"},
+                  {ph:"p2",num:2,col:"#fbbf24",title:"Part 2 — Individual Long Turn",desc:"Cue card — nói 1-2 phút về 1 chủ đề, có model answer",time:"3-4 phút"},
+                  {ph:"p3",num:3,col:"#a78bfa",title:"Part 3 — Discussion",desc:"4 câu hỏi thảo luận sâu, trừu tượng hơn",time:"4-5 phút"},
+                ].map(({ph,num,col,title,desc,time})=>(
+                  <button key={ph} className="btn" onClick={async()=>{
+                    setSpkSimGenLoading(true); resetPart(); setSpkSimPartNum(num);
+                    try {
+                      const s = await generateSpkScript(spkSimTopic.trim(), apiKey);
+                      if(num===1){ setSpkSimQs(s.part1.questions); setSpkSimCueCard(""); }
+                      else if(num===2){ setSpkSimQs([s.part2.cueCard]); setSpkSimCueCard(s.part2.cueCard); }
+                      else { setSpkSimQs(s.part3.questions); setSpkSimCueCard(""); }
+                      setSpkSimPhase(ph);
+                    } catch(e){alert("Lỗi: "+e.message);}
+                    finally{setSpkSimGenLoading(false);}
+                  }} disabled={spkSimGenLoading}
+                    style={{padding:"1rem 1.2rem",borderRadius:16,background:`${col}12`,border:`1.5px solid ${col}44`,textAlign:"left",opacity:spkSimGenLoading?0.6:1}}>
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:col,fontSize:"1rem"}}>{title}</div>
+                      <div style={{fontSize:".7rem",color:col+"99",background:col+"18",borderRadius:999,padding:"2px 10px"}}>{time}</div>
+                    </div>
+                    <div style={{fontSize:".83rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",marginTop:".3rem"}}>{desc}</div>
+                  </button>
+                ))}
+              </div>
+              {spkSimGenLoading&&<div style={{marginTop:".8rem"}}>{[80,60,70].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:8,width:`${w}%`}}/>)}</div>}
             </div>
           );
 
-          // ── DONE / REVIEW ────────────────────────────────────────────────
-          if (spkSimPart===4) return (
+          // ── REVIEW ───────────────────────────────────────────────────────
+          if(spkSimPhase==="review") return (
             <div>
               {!spkSimResult ? (
                 <div style={{textAlign:"center",padding:"1.5rem"}}>
-                  <div style={{fontSize:"3rem",marginBottom:".6rem"}}>🎉</div>
-                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.3rem",color:"#86efac",marginBottom:".5rem"}}>Hoàn thành bài thi!</div>
-                  <div style={{fontSize:".85rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",marginBottom:"1.2rem"}}>{spkSimAnswers.length} câu trả lời đã ghi nhận</div>
+                  <div style={{fontSize:"3rem",marginBottom:".5rem"}}>🎉</div>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.2rem",color:col,marginBottom:".4rem"}}>Part {spkSimPartNum} hoàn thành!</div>
+                  <div style={{fontSize:".85rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",marginBottom:"1.2rem"}}>{spkSimAnswers.filter(a=>a.answer!=="(bỏ qua)").length} câu đã trả lời</div>
                   <button className="btn" onClick={async()=>{
                     setSpkSimLoading(true);
-                    try {
-                      const r = await gradeSpkSim(spkSimScript, spkSimAnswers, apiKey);
+                    try{
+                      const r = await gradeSpkSim(spkSimPartNum, spkSimAnswers, spkSimCueCard, apiKey);
                       setSpkSimResult(r);
-                    } catch(e){alert("Lỗi: "+e.message);}
+                    }catch(e){alert("Lỗi: "+e.message);}
                     finally{setSpkSimLoading(false);}
                   }} disabled={spkSimLoading}
-                    style={{padding:".9rem 2rem",borderRadius:14,background:spkSimLoading?"rgba(96,165,250,.2)":"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                    style={{padding:".9rem 2rem",borderRadius:14,background:spkSimLoading?`${col}33`:`linear-gradient(135deg,${col},${col}cc)`,color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
                     {spkSimLoading?"⏳ AI đang chấm...":"📊 Xem kết quả"}
                   </button>
                   {spkSimLoading&&<div style={{marginTop:".8rem"}}>{[75,55,65,45].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:8,width:`${w}%`}}/>)}</div>}
                 </div>
               ) : (
                 <div className="fade-in">
-                  {/* Overall band */}
-                  <div style={{background:"rgba(0,0,0,.35)",border:"2px solid rgba(96,165,250,.3)",borderRadius:20,padding:"1.2rem 1.4rem",marginBottom:"1rem",display:"flex",alignItems:"center",gap:"1.2rem"}}>
-                    <div style={{textAlign:"center",minWidth:80}}>
-                      <div className="ielts-band" style={{color:spkSimResult.overallBand>=7?"#4ade80":spkSimResult.overallBand>=6?"#fbbf24":"#f87171",fontSize:"2.8rem",lineHeight:1}}>
-                        {spkSimResult.overallBand}
-                      </div>
-                      <div style={{fontSize:".65rem",color:"#5a4a6a"}}>Overall Band</div>
+                  {/* Band */}
+                  <div style={{background:"rgba(0,0,0,.3)",border:`2px solid ${col}44`,borderRadius:20,padding:"1.1rem 1.3rem",marginBottom:"1rem",display:"flex",alignItems:"center",gap:"1rem"}}>
+                    <div style={{textAlign:"center",minWidth:72}}>
+                      <div className="ielts-band" style={{color:spkSimResult.overallBand>=7?"#4ade80":spkSimResult.overallBand>=6?"#fbbf24":"#f87171",fontSize:"2.5rem",lineHeight:1}}>{spkSimResult.overallBand}</div>
+                      <div style={{fontSize:".6rem",color:"#5a4a6a"}}>Band</div>
                     </div>
-                    <div style={{flex:1}}>
-                      <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.05rem",color:"#f0eaff",marginBottom:".15rem"}}>
-                        {spkSimResult.overallBand>=8?"Excellent 🌟":spkSimResult.overallBand>=7?"Good 👍":spkSimResult.overallBand>=6?"Competent 💪":spkSimResult.overallBand>=5?"Modest 📚":"Limited 🔄"}
+                    <div>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:col}}>Part {spkSimPartNum}</div>
+                      <div style={{fontSize:".8rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif"}}>
+                        {spkSimResult.overallBand>=7?"Good 👍":spkSimResult.overallBand>=6?"Competent 💪":spkSimResult.overallBand>=5?"Modest 📚":"Needs work 🔄"}
                       </div>
-                      <div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif"}}>Topic: {spkSimScript?.topic}</div>
                     </div>
                   </div>
 
                   {/* 4 criteria */}
-                  <div style={{fontSize:".7rem",color:"#6a5a7a",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem"}}>📊 Band Score Chi Tiết</div>
-                  {[
-                    ["fluencyCoherence","🗣 Fluency & Coherence","Nói trôi chảy, mạch lạc"],
-                    ["lexicalResource","📚 Lexical Resource","Từ vựng phong phú"],
-                    ["grammaticalRange","⚙️ Grammatical Range","Ngữ pháp đa dạng"],
-                    ["pronunciation","🔊 Pronunciation","Phát âm rõ ràng"],
-                  ].map(([key,label,desc])=>{
-                    const c = spkSimResult.criteria?.[key];
-                    if(!c) return null;
-                    const col = c.band>=7?"#4ade80":c.band>=6?"#fbbf24":"#f87171";
-                    return (
-                      <div key={key} className="ielts-criterion">
+                  {[["fluencyCoherence","🗣 Fluency & Coherence"],["lexicalResource","📚 Lexical Resource"],["grammaticalRange","⚙️ Grammar Range"],["pronunciation","🔊 Pronunciation"]].map(([k,l])=>{
+                    const c=spkSimResult.criteria?.[k]; if(!c) return null;
+                    const cc=c.band>=7?"#4ade80":c.band>=6?"#fbbf24":"#f87171";
+                    return(
+                      <div key={k} className="ielts-criterion">
                         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".25rem"}}>
-                          <div style={{fontSize:".88rem",fontWeight:700,color:"#d4c8f0"}}>{label}</div>
-                          <div className="ielts-band" style={{color:col,fontSize:"1.3rem"}}>{c.band}</div>
+                          <div style={{fontSize:".88rem",fontWeight:700,color:"#d4c8f0"}}>{l}</div>
+                          <div className="ielts-band" style={{color:cc,fontSize:"1.2rem"}}>{c.band}</div>
                         </div>
-                        <div style={{fontSize:".65rem",color:"#5a4a6a",marginBottom:".25rem",fontStyle:"italic"}}>{desc}</div>
                         <div style={{fontSize:".85rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.6}}>{c.comment}</div>
                       </div>
                     );
                   })}
 
-                  {/* Model answer for Part 2 */}
-                  {spkSimResult.modelAnswer && (
-                    <div className="ielts-criterion" style={{borderColor:"rgba(96,165,250,.2)",marginTop:".5rem"}}>
-                      <div style={{fontSize:".7rem",color:"#60a5fa",letterSpacing:".08em",marginBottom:".4rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                        <span>✨ MODEL ANSWER (Part 2)</span>
+                  {/* Model answer Part 2 */}
+                  {spkSimResult.modelAnswer&&(
+                    <div className="ielts-criterion" style={{borderColor:"rgba(251,191,36,.25)"}}>
+                      <div style={{fontSize:".7rem",color:"#fbbf24",letterSpacing:".08em",marginBottom:".4rem",display:"flex",justifyContent:"space-between"}}>
+                        <span>✨ MODEL ANSWER</span>
                         <button className="spkbtn btn" onClick={()=>speak(spkSimResult.modelAnswer,0.85)}>🔊</button>
                       </div>
-                      <div style={{fontSize:".9rem",color:"#93c5fd",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,fontStyle:"italic"}}>{spkSimResult.modelAnswer}</div>
+                      <div style={{fontSize:".9rem",color:"#fde68a",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,fontStyle:"italic"}}>{spkSimResult.modelAnswer}</div>
                     </div>
                   )}
 
                   {/* Tips */}
-                  {spkSimResult.improvements?.length>0 && (
+                  {spkSimResult.improvements?.length>0&&(
                     <div className="ielts-criterion" style={{borderColor:"rgba(248,113,113,.2)"}}>
-                      <div style={{fontSize:".7rem",color:"#f87171",letterSpacing:".08em",marginBottom:".4rem"}}>📈 CẦN CẢI THIỆN</div>
-                      {spkSimResult.improvements.map((s,i)=><div key={i} style={{fontSize:".88rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",marginBottom:".25rem"}}>• {s}</div>)}
+                      <div style={{fontSize:".7rem",color:"#f87171",letterSpacing:".08em",marginBottom:".4rem"}}>📈 3 TIPS CẢI THIỆN</div>
+                      {spkSimResult.improvements.map((s,i)=><div key={i} style={{fontSize:".88rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",marginBottom:".3rem"}}>• {s}</div>)}
                     </div>
                   )}
 
-                  {/* Actions */}
-                  <div style={{display:"flex",gap:".7rem",marginTop:"1rem"}}>
-                    <button className="btn" onClick={()=>{setSpkSimPart(0);setSpkSimScript(null);setSpkSimAnswers([]);setSpkSimResult(null);setSpkSimQIdx(0);}}
-                      style={{flex:1,padding:".82rem",borderRadius:14,background:"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:".95rem"}}>
-                      🔄 Thi lại
-                    </button>
+                  <div style={{display:"flex",gap:".6rem",marginTop:"1rem"}}>
+                    <button className="btn" onClick={()=>{resetPart();setSpkSimPhase("p"+spkSimPartNum);}}
+                      style={{flex:1,padding:".8rem",borderRadius:12,background:`${col}18`,border:`1.5px solid ${col}44`,color:col,fontWeight:700}}>🔄 Làm lại</button>
+                    <button className="btn" onClick={goMenu}
+                      style={{flex:1,padding:".8rem",borderRadius:12,background:"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700}}>📋 Chọn Part khác</button>
                   </div>
                 </div>
               )}
             </div>
           );
 
-          // ── PARTS 1, 2, 3 ────────────────────────────────────────────────
-          return (
-            <div>
-              {/* Header */}
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".8rem"}}>
-                <div className="sim-part-badge" style={{background:partColors[spkSimPart]+"18",border:`1px solid ${partColors[spkSimPart]}44`,color:partColors[spkSimPart]}}>
-                  🎙 {partLabels[spkSimPart]}
+          // ── PARTS 1 & 3 (questions) ───────────────────────────────────────
+          if(spkSimPhase==="p1"||spkSimPhase==="p3") {
+            const currentQ = spkSimQs[spkSimQIdx]||"";
+            return (
+              <div>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".7rem"}}>
+                  <div className="sim-part-badge" style={{background:`${col}18`,border:`1px solid ${col}44`,color:col}}>
+                    🎙 {spkSimPhase==="p1"?"Part 1":"Part 3"}
+                  </div>
+                  <div style={{fontSize:".72rem",color:"#5a4a6a"}}>{spkSimAnswers.length}/{spkSimQs.length} câu</div>
                 </div>
-                <div style={{fontSize:".72rem",color:"#5a4a6a"}}>Topic: {spkSimScript?.topic}</div>
-              </div>
 
-              {/* Part 1 & 3 — Questions */}
-              {(spkSimPart===1||spkSimPart===3) && currentQ && (
-                <div>
-                  {/* Progress */}
-                  <div style={{display:"flex",gap:"3px",marginBottom:".8rem"}}>
-                    {(spkSimPart===1?spkSimScript.part1.questions:spkSimScript.part3.questions).map((_,i)=>(
-                      <div key={i} style={{flex:1,height:3,borderRadius:2,background:i<spkSimQIdx?"#4ade80":i===spkSimQIdx?partColors[spkSimPart]:"rgba(255,255,255,.1)",transition:"background .3s"}}/>
-                    ))}
-                  </div>
-
-                  {/* Examiner question */}
-                  <div style={{background:"rgba(0,0,0,.3)",border:`1px solid ${partColors[spkSimPart]}33`,borderRadius:16,padding:"1.2rem",marginBottom:"1rem"}}>
-                    <div style={{fontSize:".65rem",color:partColors[spkSimPart],letterSpacing:".08em",marginBottom:".5rem"}}>EXAMINER</div>
-                    <div style={{fontSize:"1.05rem",fontFamily:"'Crimson Pro',serif",color:"#f0eaff",lineHeight:1.65,fontWeight:600}}>{currentQ}</div>
-                    <button className="spkbtn btn" style={{marginTop:".6rem"}} onClick={()=>speak(currentQ,0.85)}>🔊 Nghe câu hỏi</button>
-                  </div>
-
-                  {/* Previous answer */}
-                  {spkSimAnswers.length>0 && spkSimAnswers[spkSimAnswers.length-1].part===spkSimPart && (
-                    <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:12,padding:".75rem",marginBottom:".8rem",fontSize:".85rem",fontFamily:"'Crimson Pro',serif",color:"#8a7a9a",fontStyle:"italic"}}>
-                      ✍️ "{spkSimAnswers[spkSimAnswers.length-1].answer}"
-                    </div>
-                  )}
+                {/* Progress */}
+                <div style={{display:"flex",gap:"3px",marginBottom:".8rem"}}>
+                  {spkSimQs.map((_,i)=><div key={i} style={{flex:1,height:3,borderRadius:2,transition:"background .3s",
+                    background:i<spkSimAnswers.length?"#4ade80":i===spkSimQIdx?col:"rgba(255,255,255,.1)"}}/>)}
                 </div>
-              )}
 
-              {/* Part 2 — Cue card */}
-              {spkSimPart===2 && (
-                <div>
-                  <div className="cue-card" style={{marginBottom:"1rem"}}>
-                    <div style={{fontSize:".7rem",fontWeight:700,letterSpacing:".08em",marginBottom:".6rem",color:"#713f12"}}>📋 TASK CARD</div>
-                    <div style={{fontSize:".95rem",lineHeight:1.75,whiteSpace:"pre-line",fontFamily:"'Crimson Pro',serif",fontWeight:600}}>
-                      {spkSimScript.part2.cueCard}
-                    </div>
-                  </div>
-                  <div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",textAlign:"center",marginBottom:".8rem"}}>
-                    📖 Đọc cue card, chuẩn bị trong {spkSimScript.part2.prepTime}s → Nói tối thiểu {spkSimScript.part2.speakTime}s
-                  </div>
+                {/* Question */}
+                <div style={{background:"rgba(0,0,0,.3)",border:`1px solid ${col}33`,borderRadius:16,padding:"1.2rem",marginBottom:"1rem"}}>
+                  <div style={{fontSize:".65rem",color:col,letterSpacing:".08em",marginBottom:".5rem"}}>EXAMINER</div>
+                  <div style={{fontSize:"1.05rem",fontFamily:"'Crimson Pro',serif",color:"#f0eaff",lineHeight:1.65,fontWeight:600}}>{currentQ}</div>
+                  <button className="spkbtn btn" style={{marginTop:".6rem"}} onClick={()=>speak(currentQ,0.88)}>🔊 Nghe câu hỏi</button>
                 </div>
-              )}
 
-              {/* Recording UI */}
-              <div style={{background:"linear-gradient(145deg,#1a1030,#0e1422)",border:`1px solid ${partColors[spkSimPart]}22`,borderRadius:18,padding:"1.3rem",textAlign:"center"}}>
-                {spkSimListening ? (
-                  <>
-                    <div className="rec-timer">{spkSimTimer}s</div>
-                    <div style={{fontSize:".75rem",color:"#f87171",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem"}} className="pulse-rec">🔴 Đang ghi âm</div>
-                    {spkSimLiveText && <div style={{fontSize:".88rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".6rem"}}>"{spkSimLiveText}"</div>}
-                  </>
-                ) : (
-                  <div style={{fontSize:".75rem",color:"#5a4a6a",marginBottom:".6rem",fontFamily:"'Crimson Pro',serif"}}>
-                    {spkSimPart===2?"Nhấn 🎤 → đọc cue card → nói tối thiểu 2 phút":"Nhấn 🎤 và trả lời câu hỏi bằng tiếng Anh"}
+                {/* Last answer preview */}
+                {spkSimAnswers.length>0&&(
+                  <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.06)",borderRadius:10,padding:".6rem .9rem",marginBottom:".8rem",fontSize:".83rem",fontFamily:"'Crimson Pro',serif",color:"#7a6a8a",fontStyle:"italic"}}>
+                    ✍️ "{spkSimAnswers[spkSimAnswers.length-1].answer.slice(0,80)}{spkSimAnswers[spkSimAnswers.length-1].answer.length>80?"...":""}"
                   </div>
                 )}
-                <button className={`mic-btn btn ${spkSimListening?"listening":"idle"}`} onClick={startRec}>
-                  {spkSimListening?"⏹":"🎤"}
-                </button>
-                {!spkSimListening && (
-                  <div style={{fontSize:".7rem",color:"#4a3a5a",marginTop:".4rem",fontFamily:"'Crimson Pro',serif"}}>
-                    Nói xong tự động dừng sau 2.5s im lặng
-                  </div>
-                )}
-              </div>
 
-              {/* Skip & quit */}
-              <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginTop:".8rem"}}>
-                {!spkSimListening && (
-                  <button className="btn" onClick={()=>{
-                    const part=spkSimPartRef.current; const qIdx=spkSimQIdxRef.current;
-                    const q = part===2?spkSimScript.part2.cueCard:(part===1?(spkSimScript.part1.questions[qIdx]||""): (spkSimScript.part3.questions[qIdx]||""));
-                    setSpkSimAnswers(prev=>[...prev,{part,q,answer:"(bỏ qua)",duration:0}]);
-                    if(part===1){const qs=spkSimScript.part1.questions;if(qIdx+1<qs.length){spkSimQIdxRef.current=qIdx+1;setSpkSimQIdx(qIdx+1);}else{spkSimPartRef.current=2;setSpkSimPart(2);setSpkSimQIdx(0);}}
-                    else if(part===2){spkSimPartRef.current=3;setSpkSimPart(3);setSpkSimQIdx(0);}
-                    else{const qs=spkSimScript.part3.questions;if(qIdx+1<qs.length){spkSimQIdxRef.current=qIdx+1;setSpkSimQIdx(qIdx+1);}else{spkSimPartRef.current=4;setSpkSimPart(4);}}
-                  }} style={{padding:".4rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
-                    ⏭ Bỏ qua
+                {/* Mic */}
+                <div style={{background:"linear-gradient(145deg,#1a1030,#0e1422)",border:`1px solid ${col}22`,borderRadius:18,padding:"1.2rem",textAlign:"center"}}>
+                  {spkSimListening
+                    ? <><div className="rec-timer">{spkSimTimer}s</div>
+                       <div style={{fontSize:".75rem",color:"#f87171",marginBottom:".5rem"}} className="pulse-rec">🔴 Đang ghi âm</div>
+                       {spkSimLiveText&&<div style={{fontSize:".85rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".5rem"}}>"{spkSimLiveText}"</div>}</>
+                    : <div style={{fontSize:".75rem",color:"#5a4a6a",marginBottom:".6rem",fontFamily:"'Crimson Pro',serif"}}>Nhấn 🎤 và trả lời</div>
+                  }
+                  <button className={`mic-btn btn ${spkSimListening?"listening":"idle"}`} onClick={startPartRec}>
+                    {spkSimListening?"⏹":"🎤"}
                   </button>
-                )}
-                <button className="btn" onClick={()=>{stopGoogleSTT();setSpkSimPart(0);setSpkSimScript(null);setSpkSimAnswers([]);setSpkSimQIdx(0);}}
-                  style={{padding:".4rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
-                  ✕ Thoát
-                </button>
+                </div>
+
+                <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginTop:".8rem"}}>
+                  {!spkSimListening&&(
+                    <button className="btn" onClick={()=>{
+                      const qIdx=spkSimQIdxRef.current;
+                      setSpkSimAnswers(prev=>{
+                        const next=[...prev,{q:spkSimQs[qIdx]||"",answer:"(bỏ qua)",duration:0}];
+                        if(next.length>=spkSimQs.length) setTimeout(()=>setSpkSimPhase("review"),200);
+                        else{spkSimQIdxRef.current=qIdx+1;setSpkSimQIdx(qIdx+1);}
+                        return next;
+                      });
+                    }} style={{padding:".38rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>⏭ Bỏ qua</button>
+                  )}
+                  <button className="btn" onClick={()=>{stopGoogleSTT();goMenu();}}
+                    style={{padding:".38rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>✕ Thoát</button>
+                </div>
+              </div>
+            );
+          }
+
+          // ── PART 2 (cue card) ─────────────────────────────────────────────
+          if(spkSimPhase==="p2") return (
+            <div>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".7rem"}}>
+                <div className="sim-part-badge" style={{background:"#fbbf2418",border:"1px solid #fbbf2444",color:"#fbbf24"}}>🎙 Part 2</div>
+                {spkSimAnswers.length===0&&<div style={{fontSize:".72rem",color:"#5a4a6a"}}>Chuẩn bị → Nói 1-2 phút</div>}
+              </div>
+
+              <div className="cue-card" style={{marginBottom:"1rem"}}>
+                <div style={{fontSize:".7rem",fontWeight:700,letterSpacing:".08em",color:"#713f12",marginBottom:".5rem"}}>📋 TASK CARD</div>
+                <div style={{fontSize:".95rem",lineHeight:1.8,whiteSpace:"pre-line",fontFamily:"'Crimson Pro',serif",fontWeight:600}}>
+                  {spkSimCueCard}
+                </div>
+              </div>
+
+              {spkSimAnswers.length===0 ? (
+                <div style={{background:"linear-gradient(145deg,#1a1030,#0e1422)",border:"1px solid rgba(251,191,36,.2)",borderRadius:18,padding:"1.2rem",textAlign:"center"}}>
+                  {spkSimListening
+                    ? <><div className="rec-timer">{spkSimTimer}s</div>
+                       <div style={{fontSize:".75rem",color:"#f87171",marginBottom:".5rem"}} className="pulse-rec">🔴 Đang ghi âm — nói tối thiểu 60s</div>
+                       {spkSimLiveText&&<div style={{fontSize:".85rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".5rem"}}>"{spkSimLiveText}"</div>}</>
+                    : <div style={{fontSize:".78rem",color:"#9a8a6a",marginBottom:".6rem",fontFamily:"'Crimson Pro',serif"}}>Đọc cue card → Nhấn 🎤 → Nói 1-2 phút</div>
+                  }
+                  <button className={`mic-btn btn ${spkSimListening?"listening":"idle"}`} onClick={startPartRec}>
+                    {spkSimListening?"⏹":"🎤"}
+                  </button>
+                </div>
+              ) : (
+                <div style={{textAlign:"center",padding:"1rem"}}>
+                  <div style={{fontSize:"2rem",marginBottom:".3rem"}}>✅</div>
+                  <div style={{fontFamily:"'Playfair Display',serif",color:"#4ade80",fontWeight:700}}>Đã ghi âm ({spkSimTimer}s)</div>
+                  <button className="btn" onClick={()=>setSpkSimPhase("review")}
+                    style={{marginTop:".9rem",padding:".8rem 2rem",borderRadius:12,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700}}>
+                    📊 Xem kết quả
+                  </button>
+                </div>
+              )}
+
+              <div style={{display:"flex",justifyContent:"center",marginTop:".8rem"}}>
+                <button className="btn" onClick={()=>{stopGoogleSTT();goMenu();}}
+                  style={{padding:".38rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>✕ Thoát</button>
               </div>
             </div>
           );
+
+          return null;
         })()}
 
         {/* ══ REVIEW ══ */}
