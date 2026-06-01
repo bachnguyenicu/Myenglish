@@ -1076,7 +1076,10 @@ function VocabApp({ apiKey }) {
   const [spkSimLiveText, setSpkSimLiveText] = useState("");
   const [spkSimTopic, setSpkSimTopic]     = useState("");
   const [spkSimTimerInterval, setSpkSimTimerInterval] = useState(null);
-  const spkSimRecRef = useRef(null); // Error Bank practice: {id: {input, checked}}
+  const spkSimRecRef = useRef(null);
+  const spkSimPartRef  = useRef(0);
+  const spkSimQIdxRef  = useRef(0);
+  const spkSimTimerRef = useRef(0); // Error Bank practice: {id: {input, checked}}
   // Daily Challenge
   const [dailyProgress, setDailyProgress] = useState(() => loadState("lx_daily", null));
   const [dailyChallenge, setDailyChallenge] = useState(null);
@@ -5062,6 +5065,10 @@ function VocabApp({ apiKey }) {
 
           const partColors = ["","#60a5fa","#fbbf24","#a78bfa"];
           const partLabels = ["","Part 1","Part 2","Part 3"];
+          // Keep refs in sync with state
+          spkSimPartRef.current  = spkSimPart;
+          spkSimQIdxRef.current  = spkSimQIdx;
+          spkSimTimerRef.current = spkSimTimer;
 
           const currentPart = spkSimScript ? (
             spkSimPart===1 ? spkSimScript.part1 :
@@ -5076,8 +5083,8 @@ function VocabApp({ apiKey }) {
           const startRec = () => {
             if (spkSimListening) { stopGoogleSTT(); return; }
             let secs = 0;
-            setSpkSimTimer(0);
-            const iv = setInterval(() => { secs++; setSpkSimTimer(secs); }, 1000);
+            setSpkSimTimer(0); spkSimTimerRef.current = 0;
+            const iv = setInterval(() => { secs++; spkSimTimerRef.current=secs; setSpkSimTimer(secs); }, 1000);
             setSpkSimTimerInterval(iv);
 
             startGoogleSTT({
@@ -5087,23 +5094,43 @@ function VocabApp({ apiKey }) {
               onResult: (data) => {
                 const transcript = data.transcript?.trim() || "(không nghe được)";
                 setSpkSimLiveText("");
-                const dur = spkSimTimer;
-                const part = spkSimPart;
-                const q = part===2 ? spkSimScript.part2.cueCard : (currentQ||"");
+                // Use refs — always fresh, no stale closure
+                const dur  = spkSimTimerRef.current;
+                const part = spkSimPartRef.current;
+                const qIdx = spkSimQIdxRef.current;
+                const script = spkSimScript;
+                const q = part===2 ? script.part2.cueCard :
+                          part===1 ? (script.part1.questions[qIdx]||"") :
+                          (script.part3.questions[qIdx]||"");
 
                 setSpkSimAnswers(prev => [...prev, { part, q, answer: transcript, duration: dur }]);
 
-                // Advance
+                // Advance — update refs immediately so next call is correct
                 if (part===1) {
-                  const qs = spkSimScript.part1.questions;
-                  if (spkSimQIdx+1 < qs.length) { setSpkSimQIdx(i=>i+1); }
-                  else { setSpkSimPart(2); setSpkSimQIdx(0); }
+                  const qs = script.part1.questions;
+                  if (qIdx+1 < qs.length) {
+                    spkSimQIdxRef.current = qIdx+1;
+                    setSpkSimQIdx(qIdx+1);
+                  } else {
+                    spkSimPartRef.current = 2;
+                    spkSimQIdxRef.current = 0;
+                    setSpkSimPart(2);
+                    setSpkSimQIdx(0);
+                  }
                 } else if (part===2) {
-                  setSpkSimPart(3); setSpkSimQIdx(0);
+                  spkSimPartRef.current = 3;
+                  spkSimQIdxRef.current = 0;
+                  setSpkSimPart(3);
+                  setSpkSimQIdx(0);
                 } else if (part===3) {
-                  const qs = spkSimScript.part3.questions;
-                  if (spkSimQIdx+1 < qs.length) { setSpkSimQIdx(i=>i+1); }
-                  else { setSpkSimPart(4); } // done
+                  const qs = script.part3.questions;
+                  if (qIdx+1 < qs.length) {
+                    spkSimQIdxRef.current = qIdx+1;
+                    setSpkSimQIdx(qIdx+1);
+                  } else {
+                    spkSimPartRef.current = 4;
+                    setSpkSimPart(4);
+                  }
                 }
               },
             });
@@ -5322,11 +5349,12 @@ function VocabApp({ apiKey }) {
               <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginTop:".8rem"}}>
                 {!spkSimListening && (
                   <button className="btn" onClick={()=>{
-                    const q = spkSimPart===2?spkSimScript.part2.cueCard:(currentQ||"");
-                    setSpkSimAnswers(prev=>[...prev,{part:spkSimPart,q,answer:"(bỏ qua)",duration:0}]);
-                    if(spkSimPart===1){const qs=spkSimScript.part1.questions;if(spkSimQIdx+1<qs.length)setSpkSimQIdx(i=>i+1);else setSpkSimPart(2);}
-                    else if(spkSimPart===2){setSpkSimPart(3);setSpkSimQIdx(0);}
-                    else{const qs=spkSimScript.part3.questions;if(spkSimQIdx+1<qs.length)setSpkSimQIdx(i=>i+1);else setSpkSimPart(4);}
+                    const part=spkSimPartRef.current; const qIdx=spkSimQIdxRef.current;
+                    const q = part===2?spkSimScript.part2.cueCard:(part===1?(spkSimScript.part1.questions[qIdx]||""): (spkSimScript.part3.questions[qIdx]||""));
+                    setSpkSimAnswers(prev=>[...prev,{part,q,answer:"(bỏ qua)",duration:0}]);
+                    if(part===1){const qs=spkSimScript.part1.questions;if(qIdx+1<qs.length){spkSimQIdxRef.current=qIdx+1;setSpkSimQIdx(qIdx+1);}else{spkSimPartRef.current=2;setSpkSimPart(2);setSpkSimQIdx(0);}}
+                    else if(part===2){spkSimPartRef.current=3;setSpkSimPart(3);setSpkSimQIdx(0);}
+                    else{const qs=spkSimScript.part3.questions;if(qIdx+1<qs.length){spkSimQIdxRef.current=qIdx+1;setSpkSimQIdx(qIdx+1);}else{spkSimPartRef.current=4;setSpkSimPart(4);}}
                   }} style={{padding:".4rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
                     ⏭ Bỏ qua
                   </button>
