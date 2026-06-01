@@ -176,9 +176,10 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
     if (!continuous) {
       let silenceTimer = null;
       let hasSpoken = false;
+      // Max 3 minutes — enough for IELTS Part 2 long turn
       const maxTimer = setTimeout(() => {
         if (mr.state === "recording") mr.stop();
-      }, 30000); // hard cap 30s
+      }, 180000);
 
       try {
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -197,16 +198,18 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
             clearTimeout(silenceTimer);
             silenceTimer = null;
           } else if (hasSpoken && !silenceTimer) {
+            // 3s silence after speaking → auto stop
             silenceTimer = setTimeout(() => {
               if (mr.state === "recording") { clearTimeout(maxTimer); mr.stop(); }
-            }, 2500);
+            }, 3000);
           }
           requestAnimationFrame(checkSilence);
         };
         checkSilence();
       } catch(e) {
         clearTimeout(maxTimer);
-        setTimeout(() => { if (mr.state === "recording") mr.stop(); }, 20000);
+        // Fallback: 3 min cap if AudioContext unavailable
+        setTimeout(() => { if (mr.state === "recording") mr.stop(); }, 180000);
       }
     }
   }).catch(err => onError?.("Không truy cập được microphone: " + err.message));
