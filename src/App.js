@@ -122,7 +122,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
+const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", IELTS_S:"ielts_s", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 
@@ -912,6 +912,92 @@ Reply ONLY with raw JSON (no unescaped double quotes in strings):
   catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
 }
 
+
+// ─── Claude API — Generate IELTS Speaking Script ─────────────────────────
+async function generateSpkScript(topic, apiKey) {
+  const chosenTopic = topic || ["hometown & family","work & study","technology","travel & transport","environment","health & lifestyle","arts & culture","education"][Math.floor(Math.random()*8)];
+
+  const prompt = `Create a full IELTS Speaking test script on the topic: "${chosenTopic}".
+
+Reply ONLY with JSON:
+{
+  "topic": "${chosenTopic}",
+  "part1": {
+    "title": "Part 1 — Introduction & Interview",
+    "questions": [
+      "Do you work or are you a student?",
+      "Tell me about your hometown.",
+      "What do you enjoy doing in your free time?",
+      "Do you prefer spending time indoors or outdoors? Why?"
+    ]
+  },
+  "part2": {
+    "title": "Part 2 — Individual Long Turn",
+    "cueCard": "Describe a [person/place/event/thing] related to ${chosenTopic}.\n\nYou should say:\n• what/who it is\n• how you know about it\n• why it is important to you\n\nAnd explain how it has influenced your life.",
+    "prepTime": 60,
+    "speakTime": 120,
+    "followUp": "Have you always felt this way about it?"
+  },
+  "part3": {
+    "title": "Part 3 — Two-way Discussion",
+    "questions": [
+      "How important is ${chosenTopic} in modern society?",
+      "Do you think attitudes towards ${chosenTopic} have changed in recent years?",
+      "What role do you think governments should play regarding ${chosenTopic}?",
+      "How might ${chosenTopic} change in the future?"
+    ]
+  }
+}`;
+
+  const data = await anthropicFetch(apiKey, {
+    model:"claude-haiku-4-5-20251001", max_tokens:800,
+    system:"Output ONLY raw JSON. No markdown. No unescaped double quotes in strings.",
+    messages:[{role:"user",content:prompt}]
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Lỗi tạo script"); }
+}
+
+// ─── Claude API — Grade IELTS Speaking ───────────────────────────────────
+async function gradeSpkSim(script, answers, apiKey) {
+  const transcript = answers.map((a,i) =>
+    `Q: ${a.q}\nA: "${a.answer}" (${a.duration}s)`
+  ).join("\n\n");
+
+  const prompt = `You are a certified IELTS examiner. Grade this speaking test strictly.
+
+TOPIC: ${script.topic}
+FULL TRANSCRIPT:
+${transcript}
+
+Grade each criterion 0-9 (use .5). Be realistic — most Vietnamese learners score 5-6.5.
+
+Reply ONLY with JSON (no unescaped double quotes in strings):
+{
+  "overallBand": 6.0,
+  "criteria": {
+    "fluencyCoherence": {"band": 6.0, "comment": "specific feedback"},
+    "lexicalResource":  {"band": 6.0, "comment": "specific feedback"},
+    "grammaticalRange": {"band": 5.5, "comment": "specific feedback"},
+    "pronunciation":    {"band": 6.0, "comment": "specific feedback on clarity and accent"}
+  },
+  "strongAnswers": ["best answer quote (first 8 words)..."],
+  "weakAnswers":   ["weakest answer quote..."],
+  "improvements":  ["specific tip 1", "specific tip 2", "specific tip 3"],
+  "modelAnswer":   "A model answer for the Part 2 cue card (3-4 sentences)"
+}`;
+
+  const data = await anthropicFetch(apiKey, {
+    model:"claude-haiku-4-5-20251001", max_tokens:900,
+    system:"You are a strict IELTS examiner. Output ONLY compact JSON. No unescaped double quotes inside strings.",
+    messages:[{role:"user",content:prompt}]
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
   const [allWords, setAllWords] = useState(() => loadState("lx_words", BUILT_IN));
@@ -976,7 +1062,21 @@ function VocabApp({ apiKey }) {
   const [ieltsGenLoading, setIeltsGenLoading] = useState(false);
   const [ieltsHistory, setIeltsHistory] = useState(() => loadState("lx_ielts_w", []));
   const [ieltsView, setIeltsView] = useState("write"); // write | history
-  const [ieltsTaskType, setIeltsTaskType] = useState("random"); // Error Bank practice: {id: {input, checked}}
+  const [ieltsTaskType, setIeltsTaskType] = useState("random");
+  // IELTS Speaking
+  const [spkSimScript, setSpkSimScript]   = useState(null);  // full 3-part script
+  const [spkSimPart, setSpkSimPart]       = useState(0);     // 0=setup, 1,2,3=parts, 4=review
+  const [spkSimQIdx, setSpkSimQIdx]       = useState(0);     // question index within part
+  const [spkSimAnswers, setSpkSimAnswers] = useState([]);    // [{part,q,answer,duration}]
+  const [spkSimListening, setSpkSimListening] = useState(false);
+  const [spkSimTimer, setSpkSimTimer]     = useState(0);     // seconds recording
+  const [spkSimResult, setSpkSimResult]   = useState(null);
+  const [spkSimLoading, setSpkSimLoading] = useState(false);
+  const [spkSimGenLoading, setSpkSimGenLoading] = useState(false);
+  const [spkSimLiveText, setSpkSimLiveText] = useState("");
+  const [spkSimTopic, setSpkSimTopic]     = useState("");
+  const [spkSimTimerInterval, setSpkSimTimerInterval] = useState(null);
+  const spkSimRecRef = useRef(null); // Error Bank practice: {id: {input, checked}}
   // Daily Challenge
   const [dailyProgress, setDailyProgress] = useState(() => loadState("lx_daily", null));
   const [dailyChallenge, setDailyChallenge] = useState(null);
@@ -1379,6 +1479,9 @@ function VocabApp({ apiKey }) {
     .reading-opt.ok{background:rgba(74,222,128,.15);border-color:#4ade80!important;color:#4ade80;}
     .reading-opt.no{background:rgba(248,113,113,.15);border-color:#f87171!important;color:#f87171;}
     .journal-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .sim-part-badge{display:inline-flex;align-items:center;gap:.4rem;padding:.25rem .8rem;border-radius:999px;font-size:.75rem;font-weight:700;}
+    .rec-timer{font-family:'Playfair Display',serif;font-size:2rem;font-weight:900;color:#f87171;}
+    .cue-card{background:linear-gradient(145deg,#fffbeb,#fef3c7);border-radius:16px;padding:1.2rem 1.4rem;color:#1a0a00;}
     .ielts-criterion{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:.75rem .9rem;margin-bottom:.5rem;}
     .ielts-band{font-family:'Playfair Display',serif;font-weight:900;font-size:1.4rem;}
     .word-count{font-size:.72rem;font-family:'Crimson Pro',serif;color:#5a4a6a;text-align:right;margin-top:.25rem;}
@@ -1424,6 +1527,7 @@ function VocabApp({ apiKey }) {
     [MODES.JOURNAL]:"📔 Nhật ký",
     [MODES.GRAMMAR]: savedLessons.length > 0 ? `📒 Grammar (${savedLessons.length})` : "📒 Grammar",
     [MODES.IELTS_W]:"🖊 IELTS Writing",
+    [MODES.IELTS_S]:"🎙 IELTS Speaking",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
   };
@@ -4951,6 +5055,290 @@ function VocabApp({ apiKey }) {
             )}
           </div>
         )}
+
+
+        {/* ══ IELTS SPEAKING SIMULATOR ══ */}
+        {mode===MODES.IELTS_S && (() => {
+
+          const partColors = ["","#60a5fa","#fbbf24","#a78bfa"];
+          const partLabels = ["","Part 1","Part 2","Part 3"];
+
+          const currentPart = spkSimScript ? (
+            spkSimPart===1 ? spkSimScript.part1 :
+            spkSimPart===2 ? spkSimScript.part2 :
+            spkSimPart===3 ? spkSimScript.part3 : null
+          ) : null;
+
+          const currentQ = spkSimPart===1 ? spkSimScript?.part1?.questions?.[spkSimQIdx] :
+                           spkSimPart===3 ? spkSimScript?.part3?.questions?.[spkSimQIdx] : null;
+
+          // Start recording
+          const startRec = () => {
+            if (spkSimListening) { stopGoogleSTT(); return; }
+            let secs = 0;
+            setSpkSimTimer(0);
+            const iv = setInterval(() => { secs++; setSpkSimTimer(secs); }, 1000);
+            setSpkSimTimerInterval(iv);
+
+            startGoogleSTT({
+              onStart: () => setSpkSimListening(true),
+              onEnd:   () => { setSpkSimListening(false); clearInterval(iv); },
+              onError: () => { setSpkSimListening(false); clearInterval(iv); },
+              onResult: (data) => {
+                const transcript = data.transcript?.trim() || "(không nghe được)";
+                setSpkSimLiveText("");
+                const dur = spkSimTimer;
+                const part = spkSimPart;
+                const q = part===2 ? spkSimScript.part2.cueCard : (currentQ||"");
+
+                setSpkSimAnswers(prev => [...prev, { part, q, answer: transcript, duration: dur }]);
+
+                // Advance
+                if (part===1) {
+                  const qs = spkSimScript.part1.questions;
+                  if (spkSimQIdx+1 < qs.length) { setSpkSimQIdx(i=>i+1); }
+                  else { setSpkSimPart(2); setSpkSimQIdx(0); }
+                } else if (part===2) {
+                  setSpkSimPart(3); setSpkSimQIdx(0);
+                } else if (part===3) {
+                  const qs = spkSimScript.part3.questions;
+                  if (spkSimQIdx+1 < qs.length) { setSpkSimQIdx(i=>i+1); }
+                  else { setSpkSimPart(4); } // done
+                }
+              },
+            });
+          };
+
+          // ── SETUP ───────────────────────────────────────────────────────
+          if (spkSimPart===0) return (
+            <div>
+              <div style={{background:"linear-gradient(145deg,rgba(96,165,250,.07),rgba(167,139,250,.05))",border:"1px solid rgba(96,165,250,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
+                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#93c5fd",marginBottom:".25rem"}}>🎙 IELTS Speaking Simulator</div>
+                <div style={{fontSize:".83rem",color:"#7a8a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+                  Mô phỏng bài thi IELTS Speaking thật — Part 1, 2, 3. Nói câu trả lời, AI chấm band score theo 4 tiêu chí.
+                </div>
+                <div style={{display:"flex",gap:".6rem",marginTop:".7rem",flexWrap:"wrap"}}>
+                  {["🗣 Part 1: 4-5 câu hỏi ngắn","📋 Part 2: Cue card 2 phút","💬 Part 3: Thảo luận sâu"].map((t,i)=>(
+                    <span key={i} style={{fontSize:".75rem",color:partColors[i+1],background:partColors[i+1]+"18",border:`1px solid ${partColors[i+1]}33`,borderRadius:999,padding:".2rem .75rem"}}>{t}</span>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{marginBottom:".8rem"}}>
+                <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Chủ đề (để trống = AI tự chọn)</div>
+                <input className="fi" placeholder="vd: technology, environment, education, travel..."
+                  value={spkSimTopic} onChange={e=>setSpkSimTopic(e.target.value)}
+                  onKeyDown={e=>e.key==="Enter"&&!spkSimGenLoading&&document.getElementById("spk-sim-btn")?.click()} />
+              </div>
+
+              {spkSimGenLoading ? (
+                <div>{[80,60,70,50].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:9,width:`${w}%`}}/>)}</div>
+              ) : (
+                <button id="spk-sim-btn" className="btn" onClick={async()=>{
+                  setSpkSimGenLoading(true);
+                  setSpkSimAnswers([]); setSpkSimResult(null); setSpkSimQIdx(0);
+                  try {
+                    const s = await generateSpkScript(spkSimTopic.trim(), apiKey);
+                    setSpkSimScript(s);
+                    setSpkSimPart(1);
+                  } catch(e){ alert("Lỗi: "+e.message); }
+                  finally { setSpkSimGenLoading(false); }
+                }} style={{width:"100%",padding:".9rem",borderRadius:14,background:"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                  🎙 Bắt đầu thi
+                </button>
+              )}
+            </div>
+          );
+
+          // ── DONE / REVIEW ────────────────────────────────────────────────
+          if (spkSimPart===4) return (
+            <div>
+              {!spkSimResult ? (
+                <div style={{textAlign:"center",padding:"1.5rem"}}>
+                  <div style={{fontSize:"3rem",marginBottom:".6rem"}}>🎉</div>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.3rem",color:"#86efac",marginBottom:".5rem"}}>Hoàn thành bài thi!</div>
+                  <div style={{fontSize:".85rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",marginBottom:"1.2rem"}}>{spkSimAnswers.length} câu trả lời đã ghi nhận</div>
+                  <button className="btn" onClick={async()=>{
+                    setSpkSimLoading(true);
+                    try {
+                      const r = await gradeSpkSim(spkSimScript, spkSimAnswers, apiKey);
+                      setSpkSimResult(r);
+                    } catch(e){alert("Lỗi: "+e.message);}
+                    finally{setSpkSimLoading(false);}
+                  }} disabled={spkSimLoading}
+                    style={{padding:".9rem 2rem",borderRadius:14,background:spkSimLoading?"rgba(96,165,250,.2)":"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                    {spkSimLoading?"⏳ AI đang chấm...":"📊 Xem kết quả"}
+                  </button>
+                  {spkSimLoading&&<div style={{marginTop:".8rem"}}>{[75,55,65,45].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:8,width:`${w}%`}}/>)}</div>}
+                </div>
+              ) : (
+                <div className="fade-in">
+                  {/* Overall band */}
+                  <div style={{background:"rgba(0,0,0,.35)",border:"2px solid rgba(96,165,250,.3)",borderRadius:20,padding:"1.2rem 1.4rem",marginBottom:"1rem",display:"flex",alignItems:"center",gap:"1.2rem"}}>
+                    <div style={{textAlign:"center",minWidth:80}}>
+                      <div className="ielts-band" style={{color:spkSimResult.overallBand>=7?"#4ade80":spkSimResult.overallBand>=6?"#fbbf24":"#f87171",fontSize:"2.8rem",lineHeight:1}}>
+                        {spkSimResult.overallBand}
+                      </div>
+                      <div style={{fontSize:".65rem",color:"#5a4a6a"}}>Overall Band</div>
+                    </div>
+                    <div style={{flex:1}}>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.05rem",color:"#f0eaff",marginBottom:".15rem"}}>
+                        {spkSimResult.overallBand>=8?"Excellent 🌟":spkSimResult.overallBand>=7?"Good 👍":spkSimResult.overallBand>=6?"Competent 💪":spkSimResult.overallBand>=5?"Modest 📚":"Limited 🔄"}
+                      </div>
+                      <div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif"}}>Topic: {spkSimScript?.topic}</div>
+                    </div>
+                  </div>
+
+                  {/* 4 criteria */}
+                  <div style={{fontSize:".7rem",color:"#6a5a7a",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".5rem"}}>📊 Band Score Chi Tiết</div>
+                  {[
+                    ["fluencyCoherence","🗣 Fluency & Coherence","Nói trôi chảy, mạch lạc"],
+                    ["lexicalResource","📚 Lexical Resource","Từ vựng phong phú"],
+                    ["grammaticalRange","⚙️ Grammatical Range","Ngữ pháp đa dạng"],
+                    ["pronunciation","🔊 Pronunciation","Phát âm rõ ràng"],
+                  ].map(([key,label,desc])=>{
+                    const c = spkSimResult.criteria?.[key];
+                    if(!c) return null;
+                    const col = c.band>=7?"#4ade80":c.band>=6?"#fbbf24":"#f87171";
+                    return (
+                      <div key={key} className="ielts-criterion">
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".25rem"}}>
+                          <div style={{fontSize:".88rem",fontWeight:700,color:"#d4c8f0"}}>{label}</div>
+                          <div className="ielts-band" style={{color:col,fontSize:"1.3rem"}}>{c.band}</div>
+                        </div>
+                        <div style={{fontSize:".65rem",color:"#5a4a6a",marginBottom:".25rem",fontStyle:"italic"}}>{desc}</div>
+                        <div style={{fontSize:".85rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.6}}>{c.comment}</div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Model answer for Part 2 */}
+                  {spkSimResult.modelAnswer && (
+                    <div className="ielts-criterion" style={{borderColor:"rgba(96,165,250,.2)",marginTop:".5rem"}}>
+                      <div style={{fontSize:".7rem",color:"#60a5fa",letterSpacing:".08em",marginBottom:".4rem",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <span>✨ MODEL ANSWER (Part 2)</span>
+                        <button className="spkbtn btn" onClick={()=>speak(spkSimResult.modelAnswer,0.85)}>🔊</button>
+                      </div>
+                      <div style={{fontSize:".9rem",color:"#93c5fd",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,fontStyle:"italic"}}>{spkSimResult.modelAnswer}</div>
+                    </div>
+                  )}
+
+                  {/* Tips */}
+                  {spkSimResult.improvements?.length>0 && (
+                    <div className="ielts-criterion" style={{borderColor:"rgba(248,113,113,.2)"}}>
+                      <div style={{fontSize:".7rem",color:"#f87171",letterSpacing:".08em",marginBottom:".4rem"}}>📈 CẦN CẢI THIỆN</div>
+                      {spkSimResult.improvements.map((s,i)=><div key={i} style={{fontSize:".88rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",marginBottom:".25rem"}}>• {s}</div>)}
+                    </div>
+                  )}
+
+                  {/* Actions */}
+                  <div style={{display:"flex",gap:".7rem",marginTop:"1rem"}}>
+                    <button className="btn" onClick={()=>{setSpkSimPart(0);setSpkSimScript(null);setSpkSimAnswers([]);setSpkSimResult(null);setSpkSimQIdx(0);}}
+                      style={{flex:1,padding:".82rem",borderRadius:14,background:"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:".95rem"}}>
+                      🔄 Thi lại
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+
+          // ── PARTS 1, 2, 3 ────────────────────────────────────────────────
+          return (
+            <div>
+              {/* Header */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".8rem"}}>
+                <div className="sim-part-badge" style={{background:partColors[spkSimPart]+"18",border:`1px solid ${partColors[spkSimPart]}44`,color:partColors[spkSimPart]}}>
+                  🎙 {partLabels[spkSimPart]}
+                </div>
+                <div style={{fontSize:".72rem",color:"#5a4a6a"}}>Topic: {spkSimScript?.topic}</div>
+              </div>
+
+              {/* Part 1 & 3 — Questions */}
+              {(spkSimPart===1||spkSimPart===3) && currentQ && (
+                <div>
+                  {/* Progress */}
+                  <div style={{display:"flex",gap:"3px",marginBottom:".8rem"}}>
+                    {(spkSimPart===1?spkSimScript.part1.questions:spkSimScript.part3.questions).map((_,i)=>(
+                      <div key={i} style={{flex:1,height:3,borderRadius:2,background:i<spkSimQIdx?"#4ade80":i===spkSimQIdx?partColors[spkSimPart]:"rgba(255,255,255,.1)",transition:"background .3s"}}/>
+                    ))}
+                  </div>
+
+                  {/* Examiner question */}
+                  <div style={{background:"rgba(0,0,0,.3)",border:`1px solid ${partColors[spkSimPart]}33`,borderRadius:16,padding:"1.2rem",marginBottom:"1rem"}}>
+                    <div style={{fontSize:".65rem",color:partColors[spkSimPart],letterSpacing:".08em",marginBottom:".5rem"}}>EXAMINER</div>
+                    <div style={{fontSize:"1.05rem",fontFamily:"'Crimson Pro',serif",color:"#f0eaff",lineHeight:1.65,fontWeight:600}}>{currentQ}</div>
+                    <button className="spkbtn btn" style={{marginTop:".6rem"}} onClick={()=>speak(currentQ,0.85)}>🔊 Nghe câu hỏi</button>
+                  </div>
+
+                  {/* Previous answer */}
+                  {spkSimAnswers.length>0 && spkSimAnswers[spkSimAnswers.length-1].part===spkSimPart && (
+                    <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:12,padding:".75rem",marginBottom:".8rem",fontSize:".85rem",fontFamily:"'Crimson Pro',serif",color:"#8a7a9a",fontStyle:"italic"}}>
+                      ✍️ "{spkSimAnswers[spkSimAnswers.length-1].answer}"
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Part 2 — Cue card */}
+              {spkSimPart===2 && (
+                <div>
+                  <div className="cue-card" style={{marginBottom:"1rem"}}>
+                    <div style={{fontSize:".7rem",fontWeight:700,letterSpacing:".08em",marginBottom:".6rem",color:"#713f12"}}>📋 TASK CARD</div>
+                    <div style={{fontSize:".95rem",lineHeight:1.75,whiteSpace:"pre-line",fontFamily:"'Crimson Pro',serif",fontWeight:600}}>
+                      {spkSimScript.part2.cueCard}
+                    </div>
+                  </div>
+                  <div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",textAlign:"center",marginBottom:".8rem"}}>
+                    📖 Đọc cue card, chuẩn bị trong {spkSimScript.part2.prepTime}s → Nói tối thiểu {spkSimScript.part2.speakTime}s
+                  </div>
+                </div>
+              )}
+
+              {/* Recording UI */}
+              <div style={{background:"linear-gradient(145deg,#1a1030,#0e1422)",border:`1px solid ${partColors[spkSimPart]}22`,borderRadius:18,padding:"1.3rem",textAlign:"center"}}>
+                {spkSimListening ? (
+                  <>
+                    <div className="rec-timer">{spkSimTimer}s</div>
+                    <div style={{fontSize:".75rem",color:"#f87171",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem"}} className="pulse-rec">🔴 Đang ghi âm</div>
+                    {spkSimLiveText && <div style={{fontSize:".88rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginBottom:".6rem"}}>"{spkSimLiveText}"</div>}
+                  </>
+                ) : (
+                  <div style={{fontSize:".75rem",color:"#5a4a6a",marginBottom:".6rem",fontFamily:"'Crimson Pro',serif"}}>
+                    {spkSimPart===2?"Nhấn 🎤 → đọc cue card → nói tối thiểu 2 phút":"Nhấn 🎤 và trả lời câu hỏi bằng tiếng Anh"}
+                  </div>
+                )}
+                <button className={`mic-btn btn ${spkSimListening?"listening":"idle"}`} onClick={startRec}>
+                  {spkSimListening?"⏹":"🎤"}
+                </button>
+                {!spkSimListening && (
+                  <div style={{fontSize:".7rem",color:"#4a3a5a",marginTop:".4rem",fontFamily:"'Crimson Pro',serif"}}>
+                    Nói xong tự động dừng sau 2.5s im lặng
+                  </div>
+                )}
+              </div>
+
+              {/* Skip & quit */}
+              <div style={{display:"flex",gap:".5rem",justifyContent:"center",marginTop:".8rem"}}>
+                {!spkSimListening && (
+                  <button className="btn" onClick={()=>{
+                    const q = spkSimPart===2?spkSimScript.part2.cueCard:(currentQ||"");
+                    setSpkSimAnswers(prev=>[...prev,{part:spkSimPart,q,answer:"(bỏ qua)",duration:0}]);
+                    if(spkSimPart===1){const qs=spkSimScript.part1.questions;if(spkSimQIdx+1<qs.length)setSpkSimQIdx(i=>i+1);else setSpkSimPart(2);}
+                    else if(spkSimPart===2){setSpkSimPart(3);setSpkSimQIdx(0);}
+                    else{const qs=spkSimScript.part3.questions;if(spkSimQIdx+1<qs.length)setSpkSimQIdx(i=>i+1);else setSpkSimPart(4);}
+                  }} style={{padding:".4rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
+                    ⏭ Bỏ qua
+                  </button>
+                )}
+                <button className="btn" onClick={()=>{stopGoogleSTT();setSpkSimPart(0);setSpkSimScript(null);setSpkSimAnswers([]);setSpkSimQIdx(0);}}
+                  style={{padding:".4rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
+                  ✕ Thoát
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* ══ REVIEW ══ */}
         {mode===MODES.REVIEW && (
