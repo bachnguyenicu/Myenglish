@@ -4585,17 +4585,34 @@ function VocabApp({ apiKey }) {
                     <div style={{fontSize:".72rem",color:"#7a6a8a",marginBottom:".6rem"}}>{journalEntries.length} bài nhật ký</div>
                     {journalEntries.map((e,i)=>(
                       <div key={i} className="journal-card">
-                        <div style={{display:"flex",justifyContent:"space-between",marginBottom:".4rem"}}>
+                        {/* Header: date + score */}
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".4rem"}}>
                           <div style={{fontSize:".7rem",color:"#a78bfa"}}>{e.date}</div>
                           <div style={{fontFamily:"'Playfair Display',serif",fontSize:".9rem",fontWeight:700,color:e.score>=7?"#4ade80":"#fbbf24"}}>{e.score}/10</div>
                         </div>
-                        <div style={{fontSize:".72rem",color:"#5a4a6a",fontStyle:"italic",marginBottom:".3rem",fontFamily:"'Crimson Pro',serif"}}>"{e.prompt}"</div>
-                        <div style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#c4b5fd",lineHeight:1.6,marginBottom:".35rem"}}>{e.text}</div>
-                        {e.corrected&&e.corrected!==e.text&&(
-                          <div style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",color:"#86efac",fontStyle:"italic",display:"flex",alignItems:"center",gap:".4rem"}}>
-                            <span style={{flex:1}}>✅ {e.corrected}</span>
-                            <button className="spkbtn btn" style={{fontSize:".62rem",padding:".1rem .4rem"}} onClick={()=>speak(e.corrected,0.82)}>🔊</button>
+
+                        {/* Prompt */}
+                        <div style={{fontSize:".72rem",color:"#5a4a6a",fontStyle:"italic",marginBottom:".6rem",fontFamily:"'Crimson Pro',serif"}}>"{e.prompt}"</div>
+
+                        {/* 2-column comparison if corrected exists */}
+                        {e.corrected && e.corrected !== e.text ? (
+                          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".6rem"}}>
+                            {/* Original */}
+                            <div style={{background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.12)",borderRadius:10,padding:".65rem .8rem"}}>
+                              <div style={{fontSize:".6rem",color:"#f87171",letterSpacing:".08em",marginBottom:".3rem",textTransform:"uppercase"}}>✏️ Bài của bạn</div>
+                              <div style={{fontSize:".85rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0",lineHeight:1.65}}>{e.text}</div>
+                            </div>
+                            {/* Corrected */}
+                            <div style={{background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.12)",borderRadius:10,padding:".65rem .8rem"}}>
+                              <div style={{fontSize:".6rem",color:"#4ade80",letterSpacing:".08em",marginBottom:".3rem",textTransform:"uppercase",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                                <span>✅ Đã sửa</span>
+                                <button className="spkbtn btn" style={{fontSize:".6rem",padding:".1rem .4rem"}} onClick={()=>speak(e.corrected,0.82)}>🔊</button>
+                              </div>
+                              <div style={{fontSize:".85rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0",lineHeight:1.65}}>{e.corrected}</div>
+                            </div>
                           </div>
+                        ) : (
+                          <div style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#c4b5fd",lineHeight:1.6}}>{e.text}</div>
                         )}
                       </div>
                     ))}
