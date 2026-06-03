@@ -4457,7 +4457,7 @@ function VocabApp({ apiKey }) {
                         setJournalEntries(prev=>[{
                           date:new Date().toLocaleDateString("vi-VN"),
                           prompt, text:journalInput.trim(),
-                          corrected:r.corrected, score:r.score, ts:Date.now()
+                          corrected:r.correctedSentence||r.corrected||"", score:r.score, ts:Date.now()
                         },...prev.slice(0,29)]);
                       } catch(e){setJournalResult({error:e.message});}
                       finally{setJournalLoading(false);}
