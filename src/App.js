@@ -4479,7 +4479,7 @@ function VocabApp({ apiKey }) {
                   </div>
                 )}
               </div>
-            )}
+            ) : null}
           </div>
         )}
 
