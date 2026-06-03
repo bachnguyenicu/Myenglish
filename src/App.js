@@ -1139,6 +1139,8 @@ function VocabApp({ apiKey }) {
   const [readingErr, setReadingErr]     = useState("");
   // Podcast
   const [podcastEp, setPodcastEp]       = useState(null);
+  const [podcastHistory, setPodcastHistory] = useState(() => loadState("lx_podcasts", []));
+  const [podcastView, setPodcastView]     = useState("listen"); // listen | history
   const [podcastTopic, setPodcastTopic]   = useState("");
   const [podcastIeltsLevel, setPodcastIeltsLevel] = useState("B2");
   const [podcastPlaying, setPodcastPlaying] = useState(false);
@@ -1242,6 +1244,7 @@ function VocabApp({ apiKey }) {
   useEffect(() => { try { localStorage.setItem("lx_daily", JSON.stringify(dailyProgress)); } catch {} }, [dailyProgress]);
   useEffect(() => { try { localStorage.setItem("lx_journal", JSON.stringify(journalEntries)); } catch {} }, [journalEntries]);
   useEffect(() => { try { localStorage.setItem("lx_ielts_w", JSON.stringify(ieltsHistory)); } catch {} }, [ieltsHistory]);
+  useEffect(() => { try { localStorage.setItem("lx_podcasts", JSON.stringify(podcastHistory)); } catch {} }, [podcastHistory]);
 
   // Trigger cloud sync whenever any data changes
   useEffect(() => {
@@ -4123,7 +4126,71 @@ function VocabApp({ apiKey }) {
         {/* ══ PODCAST ══ */}
         {mode===MODES.PODCAST && (
           <div>
-            {!podcastEp ? (
+            {/* Tab switcher */}
+            <div style={{display:"flex",gap:".5rem",marginBottom:"1rem"}}>
+              {[["listen","🎙 Bài nghe"],["history","📋 Đã lưu ("+podcastHistory.length+")"]].map(([v,l])=>(
+                <button key={v} className="btn" onClick={()=>{setPodcastView(v);}}
+                  style={{flex:1,padding:".5rem",borderRadius:10,fontSize:".88rem",fontWeight:700,
+                    background:podcastView===v?"rgba(251,191,36,.18)":"rgba(255,255,255,.04)",
+                    border:`1.5px solid ${podcastView===v?"rgba(251,191,36,.35)":"rgba(255,255,255,.08)"}`,
+                    color:podcastView===v?"#fde68a":"#6a5a7a"}}>
+                  {l}
+                </button>
+              ))}
+            </div>
+
+            {/* History view */}
+            {podcastView==="history" && (
+              <div>
+                {podcastHistory.length===0 ? (
+                  <div style={{textAlign:"center",padding:"3rem 1rem",color:"#5a4a6a"}}>
+                    <div style={{fontSize:"3rem",marginBottom:".7rem"}}>🎙</div>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.1rem",color:"#8a7a9a"}}>Chưa có bài nghe nào được lưu</div>
+                    <div style={{fontSize:".85rem",marginTop:".3rem",fontFamily:"'Crimson Pro',serif"}}>Bài nghe tự động lưu khi bạn tạo mới</div>
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{fontSize:".72rem",color:"#7a6a8a",marginBottom:".6rem"}}>{podcastHistory.length} bài đã lưu</div>
+                    {podcastHistory.map((ep,i)=>(
+                      <div key={ep.id||i} style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(251,191,36,.15)",borderRadius:14,padding:".9rem 1rem",marginBottom:".7rem"}}>
+                        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:".5rem",marginBottom:".4rem"}}>
+                          <div>
+                            <div style={{fontSize:".88rem",fontWeight:700,color:"#fde68a",fontFamily:"'Playfair Display',serif"}}>{ep.title}</div>
+                            <div style={{fontSize:".75rem",color:"#6a5a7a",fontFamily:"'Crimson Pro',serif",marginTop:".1rem"}}>{ep.topic}</div>
+                          </div>
+                          <div style={{display:"flex",gap:".4rem",alignItems:"center",flexShrink:0}}>
+                            <span style={{fontSize:".65rem",color:"#4a3a5a"}}>{ep.savedAt?new Date(ep.savedAt).toLocaleDateString("vi-VN"):""}</span>
+                            <button className="btn" onClick={()=>{
+                              setPodcastEp(ep);
+                              setPodcastQAnswers(Array((ep.questions||[]).length).fill(""));
+                              setPodcastChecked(false);
+                              setPodcastShowScript(false);
+                              setPodcastView("listen");
+                            }} style={{padding:".28rem .75rem",borderRadius:8,background:"rgba(251,191,36,.15)",border:"1px solid rgba(251,191,36,.3)",color:"#fde68a",fontSize:".78rem",fontWeight:700}}>
+                              ▶ Nghe lại
+                            </button>
+                            <button className="btn" onClick={()=>setPodcastHistory(prev=>prev.filter((_,j)=>j!==i))}
+                              style={{padding:".28rem .5rem",borderRadius:8,background:"rgba(248,113,113,.08)",border:"1px solid rgba(248,113,113,.15)",color:"#f87171",fontSize:".75rem"}}>✕</button>
+                          </div>
+                        </div>
+                        {/* Keywords */}
+                        {(ep.keyWords||[]).length>0 && (
+                          <div style={{display:"flex",gap:".3rem",flexWrap:"wrap"}}>
+                            {ep.keyWords.map((w,j)=><span key={j} style={{fontSize:".68rem",color:"#fbbf24",background:"rgba(251,191,36,.08)",borderRadius:999,padding:"1px 8px"}}>{w}</span>)}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                    <button className="btn" onClick={()=>{if(window.confirm("Xoá tất cả bài đã lưu?"))setPodcastHistory([]);}}
+                      style={{width:"100%",padding:".55rem",borderRadius:10,background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",color:"#4a3a5a",fontSize:".78rem",marginTop:".3rem"}}>
+                      🗑 Xoá tất cả
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {podcastView==="listen" && !podcastEp ? (
               <div>
                 <div style={{background:"linear-gradient(145deg,rgba(251,191,36,.07),rgba(96,165,250,.05))",border:"1px solid rgba(251,191,36,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
                   <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#fde68a",marginBottom:".25rem"}}>🎙 IELTS Podcast</div>
@@ -4163,6 +4230,7 @@ function VocabApp({ apiKey }) {
                     try {
                       const ep = await generatePodcast(podcastTopic.trim(), podcastIeltsLevel, apiKey);
                       setPodcastEp(ep); setPodcastQAnswers(Array(ep.questions.length).fill(""));
+                      setPodcastHistory(prev=>[{...ep, savedAt:Date.now(), id:Date.now()}, ...prev.slice(0,19)]);
                     } catch(e){alert("Lỗi: "+e.message);}
                     finally{setPodcastLoading(false);}
                   }} style={{width:"100%",padding:".9rem",borderRadius:14,background:"linear-gradient(135deg,#fbbf24,#f59e0b)",color:"#1a0a00",border:"none",fontWeight:700,fontSize:"1rem"}}>
