@@ -508,34 +508,56 @@ function repairAndParseJSON(raw) {
 
 // ─── Claude API — Writing Checker ─────────────────────────────────────────
 async function checkWriting(word, sentence, apiKey) {
-  const prompt = `You are a strict English writing coach. Analyze this sentence from a Vietnamese learner THOROUGHLY.
+  // Call 1: Core feedback (score, corrected, errors, style, encouragement)
+  const prompt1 = `You are a strict English writing coach. Analyze this sentence from a Vietnamese learner.
 
 Focus word: "${word.word}" (${word.type}, meaning: ${word.meaning})
 Sentence: "${sentence}"
 
-TASK: Find ALL errors — spelling, grammar, word choice, preposition, article, tense, sentence structure, style. Do not skip minor errors.
-Also analyze: Is the sentence natural? Is the style appropriate? Is the vocabulary varied?
+Find ALL errors: spelling, grammar, word choice, preposition, article, tense, style.
+Return ONLY compact single-line JSON. No double-quote chars inside strings — use single quotes.
 
-Return ONLY a compact single-line JSON. No markdown. No double-quote characters inside strings — use single quotes.
+{"overallScore":7,"wordUsed":true,"wordUsedCorrectly":true,"correctedSentence":"fixed sentence","spellingErrors":[{"wrong":"w","correct":"c","tip":"tip"}],"grammarErrors":[{"error":"e","correction":"c","rule":"quy tắc tiếng Việt"}],"styleAdvice":"lời khuyên văn phong tiếng Việt có dấu","encouragement":"lời động viên tiếng Việt có dấu"}`;
 
-{"overallScore":7,"wordUsed":true,"wordUsedCorrectly":true,"correctedSentence":"fully corrected sentence","sentenceAnalysis":[{"original":"each clause or phrase with error","corrected":"fixed version","type":"grammar|spelling|word choice|preposition|article|tense|style","explanation":"giải thích lỗi bằng tiếng Việt có dấu"}],"spellingErrors":[{"wrong":"wrng","correct":"wrong","tip":"mẹo nhớ"}],"grammarErrors":[{"error":"bad form","correction":"good form","rule":"quy tắc ngữ pháp tiếng Việt có dấu"}],"styleAdvice":"lời khuyên cụ thể về văn phong và cách diễn đạt tự nhiên hơn, tiếng Việt có dấu","lessons":[{"title":"tên bài học tiếng Việt","explanation":"giải thích bằng tiếng Việt có dấu","example":"example sentence in English"}],"encouragement":"lời động viên tiếng Việt có dấu"}
+  // Call 2: Detailed sentence analysis + lessons (separate to avoid truncation)
+  const prompt2 = `You are a strict English writing coach. Analyze ALL errors in this sentence in detail.
 
-Rules for sentenceAnalysis: break the sentence into parts, identify each error location specifically.
-Rules for lessons: provide 3-5 lessons covering the most important patterns the student should learn.`;
+Sentence: "${sentence}"
+Corrected: (analyze original sentence errors)
 
-  const data = await anthropicFetch(apiKey, {
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: 2000,
-    system: "You are a strict English writing coach. Output ONLY a single-line compact JSON. Never put double-quote characters inside string values — use single quotes instead. Write all Vietnamese with full diacritics.",
-    messages: [{ role: "user", content: prompt }]
-  });
-  const raw = (data.content || []).map(b => b.text || "").join("").trim();
+For each error found, identify the exact phrase, what is wrong, and why.
+Also provide 3-5 grammar/style lessons based on the errors.
+
+Return ONLY compact single-line JSON. No double-quote chars — use single quotes.
+
+{"sentenceAnalysis":[{"original":"exact bad phrase","corrected":"fixed phrase","type":"grammar","explanation":"giải thích tiếng Việt có dấu"}],"lessons":[{"title":"tên bài học tiếng Việt","explanation":"giải thích tiếng Việt có dấu","example":"example in English"}]}`;
+
+  const [data1, data2] = await Promise.all([
+    anthropicFetch(apiKey, {
+      model:"claude-haiku-4-5-20251001", max_tokens:1200,
+      system:"Strict English writing coach. Output ONLY single-line JSON. Single quotes in strings. Full Vietnamese diacritics.",
+      messages:[{role:"user",content:prompt1}]
+    }),
+    anthropicFetch(apiKey, {
+      model:"claude-haiku-4-5-20251001", max_tokens:1500,
+      system:"Strict English writing coach. Output ONLY single-line JSON. Single quotes in strings. Full Vietnamese diacritics.",
+      messages:[{role:"user",content:prompt2}]
+    })
+  ]);
+
+  const raw1 = (data1.content||[]).map(b=>b.text||"").join("").trim();
+  const raw2 = (data2.content||[]).map(b=>b.text||"").join("").trim();
+
   try {
-    const r = repairAndParseJSON(raw);
-    // Ensure lessons array has up to 5 items
-    if (!Array.isArray(r.lessons)) r.lessons = [];
-    if (!Array.isArray(r.sentenceAnalysis)) r.sentenceAnalysis = [];
-    return r;
+    const r1 = repairAndParseJSON(raw1);
+    let r2 = {sentenceAnalysis:[], lessons:[]};
+    try { r2 = repairAndParseJSON(raw2); } catch(_) {}
+
+    return {
+      ...r1,
+      sentenceAnalysis: Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis : [],
+      lessons: Array.isArray(r2.lessons) ? r2.lessons.slice(0,5) : [],
+    };
   } catch(e) {
     throw new Error("Lỗi đọc kết quả: " + e.message);
   }
