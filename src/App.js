@@ -508,29 +508,34 @@ function repairAndParseJSON(raw) {
 
 // ─── Claude API — Writing Checker ─────────────────────────────────────────
 async function checkWriting(word, sentence, apiKey) {
-  // Use XML-tagged output to avoid JSON quote escaping issues entirely
-  const prompt = `Analyze this English sentence from a Vietnamese learner.
-Word: ${word.word} | Type: ${word.type} | Level: ${word.level} | Meaning: ${word.meaning}
-Sentence: ${sentence}
+  const prompt = `You are a strict English writing coach. Analyze this sentence from a Vietnamese learner THOROUGHLY.
 
-Return ONLY a JSON object. Critical rules:
-- No markdown, no backticks, no explanation outside JSON
-- String values must NOT contain double-quote characters — use single quotes or rephrase instead
-- No line breaks inside string values
-- Arrays can be empty []
+Focus word: "${word.word}" (${word.type}, meaning: ${word.meaning})
+Sentence: "${sentence}"
 
-JSON structure:
-{"overallScore":7,"wordUsed":true,"wordUsedCorrectly":true,"correctedSentence":"the corrected sentence","spellingErrors":[{"wrong":"wrng","correct":"wrong","tip":"spelling tip"}],"grammarErrors":[{"error":"bad form","correction":"good form","rule":"quy tắc ngữ pháp tiếng Việt"}],"styleAdvice":"lời khuyên văn phong tiếng Việt","lessons":[{"title":"Ten bai hoc","explanation":"Giải thích ngắn bằng tiếng Việt","example":"An example sentence."}],"encouragement":"Lời động viên bằng tiếng Việt."}`;
+TASK: Find ALL errors — spelling, grammar, word choice, preposition, article, tense, sentence structure, style. Do not skip minor errors.
+Also analyze: Is the sentence natural? Is the style appropriate? Is the vocabulary varied?
+
+Return ONLY a compact single-line JSON. No markdown. No double-quote characters inside strings — use single quotes.
+
+{"overallScore":7,"wordUsed":true,"wordUsedCorrectly":true,"correctedSentence":"fully corrected sentence","sentenceAnalysis":[{"original":"each clause or phrase with error","corrected":"fixed version","type":"grammar|spelling|word choice|preposition|article|tense|style","explanation":"giải thích lỗi bằng tiếng Việt có dấu"}],"spellingErrors":[{"wrong":"wrng","correct":"wrong","tip":"mẹo nhớ"}],"grammarErrors":[{"error":"bad form","correction":"good form","rule":"quy tắc ngữ pháp tiếng Việt có dấu"}],"styleAdvice":"lời khuyên cụ thể về văn phong và cách diễn đạt tự nhiên hơn, tiếng Việt có dấu","lessons":[{"title":"tên bài học tiếng Việt","explanation":"giải thích bằng tiếng Việt có dấu","example":"example sentence in English"}],"encouragement":"lời động viên tiếng Việt có dấu"}
+
+Rules for sentenceAnalysis: break the sentence into parts, identify each error location specifically.
+Rules for lessons: provide 3-5 lessons covering the most important patterns the student should learn.`;
 
   const data = await anthropicFetch(apiKey, {
     model: "claude-haiku-4-5-20251001",
-    max_tokens: 1500,
-    system: "You are an English writing coach. Output ONLY a single-line compact JSON object. Never put double-quote characters inside JSON string values — use single quotes or reword instead. Never add markdown. Write all Vietnamese text with full diacritics (e.g. tiếng Việt, không phải tieng Viet).",
+    max_tokens: 2000,
+    system: "You are a strict English writing coach. Output ONLY a single-line compact JSON. Never put double-quote characters inside string values — use single quotes instead. Write all Vietnamese with full diacritics.",
     messages: [{ role: "user", content: prompt }]
   });
   const raw = (data.content || []).map(b => b.text || "").join("").trim();
   try {
-    return repairAndParseJSON(raw);
+    const r = repairAndParseJSON(raw);
+    // Ensure lessons array has up to 5 items
+    if (!Array.isArray(r.lessons)) r.lessons = [];
+    if (!Array.isArray(r.sentenceAnalysis)) r.sentenceAnalysis = [];
+    return r;
   } catch(e) {
     throw new Error("Lỗi đọc kết quả: " + e.message);
   }
@@ -2486,6 +2491,30 @@ function VocabApp({ apiKey }) {
                           <div style={{fontSize:".9rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0",lineHeight:1.6}}>{writingResult.correctedSentence}</div>
                         </div>
                       </div>
+
+
+                      {/* Sentence-by-sentence analysis */}
+                      {writingResult.sentenceAnalysis?.length>0 && (
+                        <div className="lesson-card" style={{borderColor:"rgba(251,191,36,.2)",marginBottom:".8rem"}}>
+                          <h4 style={{color:"#fbbf24"}}>🔍 Phân tích chi tiết ({writingResult.sentenceAnalysis.length} lỗi)</h4>
+                          {writingResult.sentenceAnalysis.map((s,i)=>(
+                            <div key={i} style={{marginBottom:".7rem",paddingBottom:i<writingResult.sentenceAnalysis.length-1?".7rem":0,borderBottom:i<writingResult.sentenceAnalysis.length-1?"1px solid rgba(255,255,255,.05)":"none"}}>
+                              <span style={{fontSize:".62rem",background:
+                                s.type==="grammar"?"rgba(248,113,113,.15)":s.type==="spelling"?"rgba(251,191,36,.15)":s.type==="style"?"rgba(96,165,250,.15)":"rgba(167,139,250,.15)",
+                                color:s.type==="grammar"?"#fca5a5":s.type==="spelling"?"#fde68a":s.type==="style"?"#93c5fd":"#c4b5fd",
+                                borderRadius:6,padding:"1px 7px",fontWeight:700,textTransform:"uppercase",letterSpacing:".04em",marginBottom:".3rem",display:"inline-block"}}>
+                                {s.type}
+                              </span>
+                              <div style={{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",margin:".25rem 0"}}>
+                                <span style={{background:"rgba(248,113,113,.12)",borderRadius:6,padding:".12rem .55rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".9rem",textDecoration:"line-through"}}>{s.original}</span>
+                                <span style={{color:"#5a4a6a"}}>→</span>
+                                <span style={{background:"rgba(74,222,128,.12)",borderRadius:6,padding:".12rem .55rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:700,fontSize:".9rem"}}>{s.corrected}</span>
+                              </div>
+                              {s.explanation&&<div style={{fontSize:".8rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>💡 {s.explanation}</div>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
 
                       {/* Spelling errors */}
                       {writingResult.spellingErrors?.length > 0 && (
