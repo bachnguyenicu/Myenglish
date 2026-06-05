@@ -519,18 +519,18 @@ Return ONLY compact single-line JSON. No double-quote chars inside strings — u
 
 {"overallScore":7,"wordUsed":true,"wordUsedCorrectly":true,"correctedSentence":"fixed sentence","spellingErrors":[{"wrong":"w","correct":"c","tip":"tip"}],"grammarErrors":[{"error":"e","correction":"c","rule":"quy tắc tiếng Việt"}],"styleAdvice":"lời khuyên văn phong tiếng Việt có dấu","encouragement":"lời động viên tiếng Việt có dấu"}`;
 
-  // Call 2: Detailed sentence analysis + lessons (separate to avoid truncation)
-  const prompt2 = `You are a strict English writing coach. Analyze ALL errors in this sentence in detail.
+  // Call 2: Detailed sentence analysis + lessons
+  const prompt2 = `English writing coach. Analyze errors in this sentence and provide lessons.
 
 Sentence: "${sentence}"
-Corrected: (analyze original sentence errors)
 
-For each error found, identify the exact phrase, what is wrong, and why.
-Also provide 3-5 grammar/style lessons based on the errors.
+Task 1: Find each specific error (grammar, spelling, word choice, preposition, tense, style).
+Task 2: Create 3-5 grammar lessons based on the patterns of errors.
 
-Return ONLY compact single-line JSON. No double-quote chars — use single quotes.
+Output ONLY this JSON (single quotes inside strings, Vietnamese with diacritics):
+{"sentenceAnalysis":[{"original":"bad phrase","corrected":"fixed","type":"grammar","explanation":"giải thích tiếng Việt có dấu"}],"lessons":[{"title":"Tên bài học tiếng Việt","explanation":"Giải thích tiếng Việt có dấu","example":"Example in English."},{"title":"Tên bài 2","explanation":"Giải thích 2","example":"Example 2."}]}
 
-{"sentenceAnalysis":[{"original":"exact bad phrase","corrected":"fixed phrase","type":"grammar","explanation":"giải thích tiếng Việt có dấu"}],"lessons":[{"title":"tên bài học tiếng Việt","explanation":"giải thích tiếng Việt có dấu","example":"example in English"}]}`;
+Important: lessons MUST have 3-5 items. sentenceAnalysis must list every error found.`;
 
   const [data1, data2] = await Promise.all([
     anthropicFetch(apiKey, {
@@ -793,15 +793,18 @@ Find ALL errors: grammar, spelling, word choice, preposition, article, tense, st
 Return ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics.
 {"score":7,"correctedSentence":"fully corrected entry","grammarErrors":[{"error":"e","correction":"c","rule":"quy tắc tiếng Việt"}],"spellingErrors":[{"wrong":"w","correct":"c","tip":"mẹo"}],"styleAdvice":"lời khuyên văn phong cụ thể tiếng Việt có dấu","encouragement":"lời động viên tiếng Việt có dấu"}`;
 
-  // Call 2: detailed analysis + lessons
-  const p2 = `You are a strict English writing coach. Analyze ALL errors in this text in detail.
+  // Call 2: detailed sentence analysis + lessons
+  const p2 = `English writing coach. Analyze this journal entry and provide learning lessons.
 
 Entry: "${entry}"
 
-For each error, identify the exact phrase and explain why it is wrong.
-Provide 3-5 grammar/style lessons learned from these errors.
-Return ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics.
-{"sentenceAnalysis":[{"original":"exact bad phrase","corrected":"fixed","type":"grammar","explanation":"giải thích tiếng Việt có dấu"}],"lessons":[{"title":"tên bài học tiếng Việt","explanation":"giải thích tiếng Việt có dấu","example":"example in English"}]}`;
+Task 1: Find each specific error (grammar, word choice, preposition, tense, style).
+Task 2: Create 3-5 grammar lessons based on the patterns of errors found.
+
+Output ONLY this JSON (single quotes inside strings, Vietnamese with diacritics):
+{"sentenceAnalysis":[{"original":"bad phrase from text","corrected":"fixed phrase","type":"grammar","explanation":"giải thích lỗi tiếng Việt có dấu"}],"lessons":[{"title":"Tên bài học tiếng Việt","explanation":"Giải thích ngắn tiếng Việt có dấu","example":"Example sentence in English."},{"title":"Tên bài học 2","explanation":"Giải thích 2","example":"Example 2."}]}
+
+Important: lessons array must have 3-5 items. Do not skip lessons.`;
 
   const [d1, d2] = await Promise.all([
     anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
