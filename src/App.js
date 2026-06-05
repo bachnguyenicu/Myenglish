@@ -783,37 +783,53 @@ Reply ONLY with this JSON structure:
 
 // ─── Claude API — Journal Feedback ───────────────────────────────────────
 async function checkJournal(entry, prompt, apiKey) {
-  const p = `You are an English writing coach for Vietnamese learners. Review this journal entry.
+  // Call 1: core feedback
+  const p1 = `You are a strict English writing coach. Review this journal entry from a Vietnamese learner.
 
 Prompt: "${prompt}"
 Entry: "${entry}"
 
-Reply ONLY with raw JSON. No markdown. No unescaped double-quote characters inside strings — use single quotes instead.
-{
-  "score": 7,
-  "correctedSentence": "fully corrected version of their entry",
-  "grammarErrors": [{"error": "bad phrase", "correction": "good phrase", "rule": "quy tac ngu phap bằng tiếng Việt có dấu"}],
-  "styleAdvice": "loi khuyen van phong bằng tiếng Việt có dấu, 1-2 cau",
-  "lessons": [
-    {"title": "Tên bài học tiếng Việt", "explanation": "Giải thích ngắn bằng tiếng Việt có dấu", "example": "An example sentence."}
-  ],
-  "encouragement": "1 cau dong vien bằng tiếng Việt có dấu"
-}
-Rules: grammarErrors can be empty []. lessons: 1-2 items focused on most important issues.`;
+Find ALL errors: grammar, spelling, word choice, preposition, article, tense, style.
+Return ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics.
+{"score":7,"correctedSentence":"fully corrected entry","grammarErrors":[{"error":"e","correction":"c","rule":"quy tắc tiếng Việt"}],"spellingErrors":[{"wrong":"w","correct":"c","tip":"mẹo"}],"styleAdvice":"lời khuyên văn phong cụ thể tiếng Việt có dấu","encouragement":"lời động viên tiếng Việt có dấu"}`;
 
-  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
-    system:"You are an English writing coach. Output ONLY compact single-line JSON. Never use unescaped double-quote characters inside string values. Write all Vietnamese text with full diacritics.",
-    messages:[{role:"user",content:p}]});
-  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
-  let r;
-  try { r = repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
-  // Normalise field names (handle both corrected and correctedSentence)
-  if (!r.correctedSentence && r.corrected) r.correctedSentence = r.corrected;
-  if (!Array.isArray(r.grammarErrors)) r.grammarErrors = [];
-  if (!Array.isArray(r.lessons)) r.lessons = [];
-  r.score = r.score || 5;
-  r.encouragement = r.encouragement || "";
-  return r;
+  // Call 2: detailed analysis + lessons
+  const p2 = `You are a strict English writing coach. Analyze ALL errors in this text in detail.
+
+Entry: "${entry}"
+
+For each error, identify the exact phrase and explain why it is wrong.
+Provide 3-5 grammar/style lessons learned from these errors.
+Return ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics.
+{"sentenceAnalysis":[{"original":"exact bad phrase","corrected":"fixed","type":"grammar","explanation":"giải thích tiếng Việt có dấu"}],"lessons":[{"title":"tên bài học tiếng Việt","explanation":"giải thích tiếng Việt có dấu","example":"example in English"}]}`;
+
+  const [d1, d2] = await Promise.all([
+    anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
+      system:"English writing coach. ONLY single-line JSON. Single quotes in strings. Full Vietnamese diacritics.",
+      messages:[{role:"user",content:p1}]}),
+    anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1200,
+      system:"English writing coach. ONLY single-line JSON. Single quotes in strings. Full Vietnamese diacritics.",
+      messages:[{role:"user",content:p2}]})
+  ]);
+
+  const raw1 = (d1.content||[]).map(b=>b.text||"").join("").trim();
+  const raw2 = (d2.content||[]).map(b=>b.text||"").join("").trim();
+
+  let r1, r2 = {sentenceAnalysis:[], lessons:[]};
+  try { r1 = repairAndParseJSON(raw1); } catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
+  try { r2 = repairAndParseJSON(raw2); } catch(_) {}
+
+  if (!r1.correctedSentence && r1.corrected) r1.correctedSentence = r1.corrected;
+  if (!Array.isArray(r1.grammarErrors))  r1.grammarErrors = [];
+  if (!Array.isArray(r1.spellingErrors)) r1.spellingErrors = [];
+  r1.score = r1.score || 5;
+  r1.encouragement = r1.encouragement || "";
+
+  return {
+    ...r1,
+    sentenceAnalysis: Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis : [],
+    lessons: Array.isArray(r2.lessons) ? r2.lessons.slice(0,5) : [],
+  };
 }
 
 // ─── Journal prompt pool ──────────────────────────────────────────────────
@@ -4630,6 +4646,29 @@ function VocabApp({ apiKey }) {
                     </div>
 
                     {/* Grammar errors — same style as Writing */}
+                    {/* Sentence analysis */}
+                    {journalResult.sentenceAnalysis?.length>0 && (
+                      <div className="lesson-card" style={{borderColor:"rgba(251,191,36,.2)",marginBottom:".8rem"}}>
+                        <h4 style={{color:"#fbbf24"}}>🔍 Phân tích chi tiết ({journalResult.sentenceAnalysis.length} lỗi)</h4>
+                        {journalResult.sentenceAnalysis.map((s,i)=>(
+                          <div key={i} style={{marginBottom:".7rem",paddingBottom:i<journalResult.sentenceAnalysis.length-1?".7rem":0,borderBottom:i<journalResult.sentenceAnalysis.length-1?"1px solid rgba(255,255,255,.05)":"none"}}>
+                            <span style={{fontSize:".62rem",background:
+                              s.type==="grammar"?"rgba(248,113,113,.15)":s.type==="spelling"?"rgba(251,191,36,.15)":s.type==="style"?"rgba(96,165,250,.15)":"rgba(167,139,250,.15)",
+                              color:s.type==="grammar"?"#fca5a5":s.type==="spelling"?"#fde68a":s.type==="style"?"#93c5fd":"#c4b5fd",
+                              borderRadius:6,padding:"1px 7px",fontWeight:700,textTransform:"uppercase",letterSpacing:".04em",marginBottom:".3rem",display:"inline-block"}}>
+                              {s.type}
+                            </span>
+                            <div style={{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",margin:".25rem 0"}}>
+                              <span style={{background:"rgba(248,113,113,.12)",borderRadius:6,padding:".12rem .55rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".9rem",textDecoration:"line-through"}}>{s.original}</span>
+                              <span style={{color:"#5a4a6a"}}>→</span>
+                              <span style={{background:"rgba(74,222,128,.12)",borderRadius:6,padding:".12rem .55rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:700,fontSize:".9rem"}}>{s.corrected}</span>
+                            </div>
+                            {s.explanation&&<div style={{fontSize:".8rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>💡 {s.explanation}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
                     {journalResult.grammarErrors?.length>0 && (
                       <div className="lesson-card" style={{borderColor:"rgba(248,113,113,.18)",marginBottom:".8rem"}}>
                         <h4 style={{color:"#f87171"}}>📐 Lỗi ngữ pháp ({journalResult.grammarErrors.length})</h4>
