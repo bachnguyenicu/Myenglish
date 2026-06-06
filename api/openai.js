@@ -26,7 +26,7 @@ export default async function handler(req, res) {
         model,
         messages: fullMessages,
         max_completion_tokens: max_tokens, // GPT-5 uses max_completion_tokens
-        temperature: 0.7,
+        // temperature: not supported for gpt-5-mini
       }),
     });
 
