@@ -8,7 +8,7 @@ export default async function handler(req, res) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "OpenAI API key not configured" });
 
-  const { model = "gpt-5-mini", messages, system, max_tokens = 1000 } = req.body || {};
+  const { messages, system, max_tokens = 1000 } = req.body || {};
   if (!messages?.length) return res.status(400).json({ error: "Missing messages" });
 
   const fullMessages = system
@@ -23,10 +23,10 @@ export default async function handler(req, res) {
         "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model,
+        model: "gpt-4o-mini",
         messages: fullMessages,
-        max_completion_tokens: max_tokens, // GPT-5 uses max_completion_tokens
-        // temperature: not supported for gpt-5-mini
+        max_tokens,
+        temperature: 0.7,
       }),
     });
 
@@ -38,7 +38,6 @@ export default async function handler(req, res) {
     const data = await response.json();
     const text = data.choices?.[0]?.message?.content || "";
 
-    // Return in same format as Anthropic API
     return res.status(200).json({
       content: [{ type: "text", text }],
       model: data.model,
