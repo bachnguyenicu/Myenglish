@@ -244,6 +244,34 @@ function pronunciationScore(words, targetText) {
   return { score: avg, wordScores };
 }
 
+
+// ─── OpenAI API fetch (same interface as anthropicFetch) ──────────────────
+async function openAIFetch(body, maxRetries = 3) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const res = await fetch("/api/openai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5-mini",
+          system: body.system || "",
+          messages: body.messages || [],
+          max_tokens: body.max_tokens || 1000,
+        }),
+      });
+      if (res.status === 429 && attempt < maxRetries) {
+        await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
+        continue;
+      }
+      if (!res.ok) throw new Error(`OpenAI error ${res.status}`);
+      return await res.json();
+    } catch (e) {
+      if (attempt === maxRetries) throw e;
+      await new Promise(r => setTimeout(r, 1500 * (attempt + 1)));
+    }
+  }
+}
+
 // ─── TTS: Google Neural Voice with Web Speech fallback ───────────────────
 // Shared AudioContext — created once, reused for all TTS (iOS compatible)
 let _ttsAudio = null;
@@ -420,7 +448,7 @@ If it is a Vietnamese word or phrase, find the best English equivalent and provi
 Return ONLY this JSON (no backticks, no extra text):
 {"word":"<English word>","phonetic":"<IPA>","type":"<adj|verb|noun|adv|phrase>","level":"<A1|A2|B1|B2|C1|C2>","meaning":"<Vietnamese meaning>","meaningEn":"<English definition>","example":"<example sentence>"}`;
 
-  const data = await anthropicFetch(apiKey, {
+  const data = await openAIFetch( {
     model: "claude-haiku-4-5-20251001",
     max_tokens: 500,
     system: systemPrompt,
@@ -456,7 +484,7 @@ Rules:
 Respond ONLY with this JSON (no markdown, no backticks):
 {"topic":"<short topic title in Vietnamese>","passage":"<paragraph with [BLANK_1], [BLANK_2] etc.>","blanks":["word1","word2"],"meanings":["Vietnamese meaning 1","Vietnamese meaning 2"]}`;
 
-  const data = await anthropicFetch(apiKey, {
+  const data = await openAIFetch( {
     model: "claude-haiku-4-5-20251001",
     max_tokens: 800,
     system: "You are a helpful assistant. Always respond with only raw JSON, no markdown fences, no explanation.",
@@ -565,7 +593,7 @@ Important: lessons MUST have 3-5 items. sentenceAnalysis must list every error f
 
 
 // ─── Claude API — Generate Dictation Sentence ─────────────────────────────
-async function generateDictationSentence(word, apiKey) {
+async function generateDictationSentence(word, apiKey) { // Uses OpenAI GPT-5 mini
   const prompt = `Create ONE natural English sentence using the word "${word.word}" (${word.type}, meaning: ${word.meaning}).
 
 Requirements:
@@ -576,7 +604,7 @@ Requirements:
 
 Reply with ONLY the sentence, no quotes, no explanation.`;
 
-  const data = await anthropicFetch(apiKey, {
+  const data = await openAIFetch( {
     model: "claude-haiku-4-5-20251001",
     max_tokens: 120,
     system: "Reply with ONLY one English sentence. No quotes. No explanation.",
@@ -610,7 +638,7 @@ Reply ONLY with this JSON (no markdown):
 
 Alternate strictly: ai, user, ai, user... Start with ai.`;
 
-  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
+  const data = await openAIFetch( {model:"claude-haiku-4-5-20251001",max_tokens:900,
     system:"Output ONLY raw JSON. No markdown. No explanation. Never use unescaped double-quote characters inside string values.",
     messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
@@ -641,7 +669,7 @@ For each user turn, provide:
 Reply ONLY with raw JSON (no markdown, no unescaped quotes inside strings):
 {"overallScore":75,"summary":"tổng kết bằng tiếng Việt","turns":[{"turnIndex":1,"said":"what they said","refined":"more natural version","grammarNote":"ghi chú ngữ pháp","pronunciationTip":"mẹo phát âm","score":80}]}`;
 
-  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1200,
+  const data = await openAIFetch( {model:"claude-haiku-4-5-20251001",max_tokens:1200,
     system:"You are an English conversation coach. Output ONLY compact single-line JSON. Never use unescaped double quotes inside string values.",
     messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
@@ -668,7 +696,7 @@ Generate a mini challenge with 3 tasks. Reply ONLY with raw JSON:
   "speakSentence": "<same or similar sentence for speaking practice>"
 }`;
 
-  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:500,
+  const data = await openAIFetch( {model:"claude-haiku-4-5-20251001",max_tokens:500,
     system:"Output ONLY raw JSON. No markdown. Never use unescaped double-quote characters inside string values.",
     messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
@@ -683,7 +711,7 @@ Generate a mini challenge with 3 tasks. Reply ONLY with raw JSON:
 
 
 // ─── Claude API — Reading Comprehension ──────────────────────────────────
-async function generateReading(words, level, apiKey) {
+async function generateReading(words, level, apiKey) { // Uses OpenAI GPT-5 mini
   const picks = words.slice(0, 5).map(w => `"${w.word}" (${w.meaning})`).join(", ");
   const prompt = `Write a short English reading passage for a Vietnamese learner at ${level} level.
 Include these vocabulary words naturally: ${picks}
@@ -699,7 +727,7 @@ Reply ONLY with raw JSON:
   ],
   "vocabulary": ["word1","word2","word3"]
 }`;
-  const data = await anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
+  const data = await openAIFetch( {model:"claude-haiku-4-5-20251001",max_tokens:900,
     system:"Output ONLY raw JSON. No markdown. Never use unescaped double-quote characters inside string values — use single quotes instead.",
     messages:[{role:"user",content:prompt}]});
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
@@ -714,7 +742,7 @@ Reply ONLY with raw JSON:
 }
 
 // ─── Claude API — Mini Podcast ────────────────────────────────────────────
-async function generatePodcast(topic, level, apiKey) {
+async function generatePodcast(topic, level, apiKey) { // Uses OpenAI GPT-5 mini
   const topicLine = topic ? `Topic: "${topic}"` : `Topic: choose an interesting everyday topic (travel, technology, health, environment, education, etc.)`;
 
   // Random IELTS question types for variety
@@ -750,7 +778,7 @@ Spread answers across A B C D — do not use same answer twice in a row.
 Reply ONLY with this JSON structure:
 {"title":"Episode title in English","topic":"One-line topic in English","script":[{"speaker":"A","line":"..."},{"speaker":"B","line":"..."}],"questions":[{"type":"multiple choice","q":"What does Speaker A think about...?","options":["A. first option","B. second option","C. third option","D. fourth option"],"answer":"B"},{"type":"sentence completion","q":"The project deadline was moved to ___.","options":[],"answer":"the end of March"},{"type":"short answer","q":"What is the main problem Speaker B identifies?","options":[],"answer":"lack of funding"},{"type":"matching","q":"Which speaker mentions each point? A=Speaker A, B=Speaker B","options":["A. prefers online research","B. suggests interviewing experts","C. wants to extend the deadline","D. proposes a new structure"],"answer":"AC"}],"keyWords":["word1","word2","word3"]}`;
 
-  const data = await anthropicFetch(apiKey, {
+  const data = await openAIFetch( {
     model: "claude-haiku-4-5-20251001",
     max_tokens: 2000,
     system: "You are an official IELTS exam creator. All content must be in English. Output ONLY a single valid JSON object. No markdown. No text before or after JSON. Use single quotes inside strings, never unescaped double quotes.",
@@ -894,7 +922,7 @@ Rules:
 
 
 // ─── Claude API — Generate IELTS Task 2 Prompt ───────────────────────────
-async function generateIeltsPrompt(taskType, apiKey) {
+async function generateIeltsPrompt(taskType, apiKey) { // Uses OpenAI GPT-5 mini
   const types = {
     "opinion":    "Opinion/Agree or Disagree — 'To what extent do you agree or disagree?'",
     "discussion": "Discussion — 'Discuss both views and give your own opinion.'",
@@ -913,7 +941,7 @@ Topic: choose from education, technology, environment, society, health, globalis
 Reply ONLY with JSON:
 {"type":"${taskType==="random"?"(type name)":taskType}","topic":"topic in 2-3 words","question":"Full IELTS task 2 question (2-4 sentences, exactly as it appears on the exam). End with the task instruction.","timeLimit":40,"wordLimit":250}`;
 
-  const data = await anthropicFetch(apiKey, {
+  const data = await openAIFetch( {
     model:"claude-haiku-4-5-20251001", max_tokens:400,
     system:"Output ONLY raw JSON. No markdown.",
     messages:[{role:"user",content:prompt}]
@@ -963,7 +991,7 @@ Reply ONLY with raw JSON (no unescaped double quotes in strings):
 
 
 // ─── Claude API — Generate IELTS Speaking Script ─────────────────────────
-async function generateSpkScript(topic, apiKey) {
+async function generateSpkScript(topic, apiKey) { // Uses OpenAI GPT-5 mini
   const chosenTopic = topic || ["hometown & family","work & study","technology","travel & transport","environment","health & lifestyle","arts & culture","education"][Math.floor(Math.random()*8)];
 
   const prompt = `Create a full IELTS Speaking test script on the topic: "${chosenTopic}".
@@ -998,7 +1026,7 @@ Reply ONLY with JSON:
   }
 }`;
 
-  const data = await anthropicFetch(apiKey, {
+  const data = await openAIFetch( {
     model:"claude-haiku-4-5-20251001", max_tokens:800,
     system:"Output ONLY raw JSON. No markdown. No unescaped double quotes in strings.",
     messages:[{role:"user",content:prompt}]
