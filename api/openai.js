@@ -11,7 +11,6 @@ export default async function handler(req, res) {
   const { model = "gpt-5-mini", messages, system, max_tokens = 1000 } = req.body || {};
   if (!messages?.length) return res.status(400).json({ error: "Missing messages" });
 
-  // Build messages array — prepend system as first message if provided
   const fullMessages = system
     ? [{ role: "system", content: system }, ...messages]
     : messages;
@@ -26,7 +25,7 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         model,
         messages: fullMessages,
-        max_tokens,
+        max_completion_tokens: max_tokens, // GPT-5 uses max_completion_tokens
         temperature: 0.7,
       }),
     });
@@ -39,7 +38,7 @@ export default async function handler(req, res) {
     const data = await response.json();
     const text = data.choices?.[0]?.message?.content || "";
 
-    // Return in same format as Anthropic API for easy swap
+    // Return in same format as Anthropic API
     return res.status(200).json({
       content: [{ type: "text", text }],
       model: data.model,
