@@ -1138,6 +1138,32 @@ Reply ONLY with JSON (single quotes inside strings):
 
 
 
+
+// ─── OpenAI — Topic Vocabulary Builder ───────────────────────────────────
+async function generateTopicVocab(topic) {
+  const prompt = `You are an English vocabulary teacher. Create a comprehensive vocabulary guide for the topic: "${topic}"
+
+Include:
+- 8-10 key words/phrases most useful for this topic
+- For each: IPA, part of speech, definition, natural example sentence, and 2-3 collocations
+- 5 topic-specific collocations/chunks that native speakers use
+- 3 common mistakes learners make in this topic context
+
+ALL content in English only. No Vietnamese.
+
+Reply ONLY with JSON (single quotes inside strings):
+{"topic":"${topic}","vocabulary":[{"word":"key word","ipa":"/ipa/","pos":"noun/verb/adj","definition":"clear English definition","example":"Natural example sentence.","collocations":["collocation 1","collocation 2","collocation 3"]}],"topicPhrases":[{"phrase":"useful chunk or phrase","example":"example sentence using it"}],"commonMistakes":[{"wrong":"incorrect usage","correct":"correct usage","note":"brief explanation"}]}`;
+
+  const data = await openAIFetch({
+    system: "You are an expert English vocabulary teacher. Output ONLY compact single-line JSON. Single quotes inside strings. All content in English.",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 2000,
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Error reading result"); }
+}
+
 // ─── OpenAI — Vocabulary in Context ──────────────────────────────────────
 async function generateVocabInContext(word, context) {
   const contextMap = {
@@ -1331,6 +1357,9 @@ function VocabApp({ apiKey }) {
   const [vicResult,   setVicResult]   = useState(null);
   const [vicLoading,  setVicLoading]  = useState(false);
   const [vicContext,  setVicContext]  = useState("all");
+  const [vicMode,     setVicMode]     = useState("word");  // word | topic
+  const [vicTopic,    setVicTopic]    = useState("");
+  const [vicTopicResult, setVicTopicResult] = useState(null);
   const [spkSimPhase,   setSpkSimPhase]   = useState("menu"); // menu|p1|p2|p3|review
   const [spkSimPartNum, setSpkSimPartNum] = useState(0);
   const [spkSimQs,      setSpkSimQs]      = useState([]);   // questions for current part
@@ -5491,62 +5520,189 @@ function VocabApp({ apiKey }) {
               </div>
             </div>
 
-            {/* Context filter */}
-            <div style={{marginBottom:".8rem"}}>
-              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".35rem",letterSpacing:".05em"}}>Ngữ cảnh ưu tiên</div>
-              <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
-                {[["all","🌐 All","#60a5fa"],["daily","💬 Daily","#4ade80"],["work","💼 Work","#fbbf24"],["academic","🎓 Academic","#a78bfa"],["travel","✈️ Travel","#f97316"]].map(([val,label,col])=>(
-                  <button key={val} className="btn" onClick={()=>setVicContext(val)}
-                    style={{padding:".28rem .8rem",borderRadius:999,fontSize:".8rem",fontWeight:700,
-                      border:`1.5px solid ${vicContext===val?col+"cc":col+"44"}`,
-                      background:vicContext===val?col+"22":"transparent",
-                      color:vicContext===val?col:"#5a4a6a"}}>
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Word input */}
-            <div style={{marginBottom:".8rem"}}>
-              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Từ hoặc cụm từ muốn học</div>
-              <div style={{display:"flex",gap:".5rem"}}>
-                <input className="fi" style={{flex:1}}
-                  placeholder="vd: nevertheless, turn down, give away, pull off..."
-                  value={vicWord} onChange={e=>setVicWord(e.target.value)}
-                  onKeyDown={e=>{if(e.key==="Enter"&&vicWord.trim()&&!vicLoading)document.getElementById("vic-btn")?.click();}}
-                />
-                <button id="vic-btn" className="btn" disabled={!vicWord.trim()||vicLoading}
-                  onClick={async()=>{
-                    setVicLoading(true); setVicResult(null);
-                    try {
-                      const r = await generateVocabInContext(vicWord.trim(), vicContext);
-                      setVicResult(r);
-                    } catch(e){ alert("Lỗi: "+e.message); }
-                    finally { setVicLoading(false); }
-                  }}
-                  style={{padding:".5rem 1.1rem",borderRadius:12,background:"linear-gradient(135deg,#60a5fa,#4ade80)",color:"white",border:"none",fontWeight:700,whiteSpace:"nowrap"}}>
-                  {vicLoading?"⏳...":"🔍 Tra"}
+            {/* Mode switcher */}
+            <div style={{display:"flex",gap:".5rem",marginBottom:"1rem"}}>
+              {[["word","🔤 Single Word"],["topic","🗂 Topic Vocab"]].map(([v,l])=>(
+                <button key={v} className="btn" onClick={()=>{setVicMode(v);setVicResult(null);setVicTopicResult(null);}}
+                  style={{flex:1,padding:".5rem",borderRadius:10,fontSize:".88rem",fontWeight:700,
+                    background:vicMode===v?"rgba(96,165,250,.18)":"rgba(255,255,255,.04)",
+                    border:`1.5px solid ${vicMode===v?"rgba(96,165,250,.35)":"rgba(255,255,255,.08)"}`,
+                    color:vicMode===v?"#93c5fd":"#6a5a7a"}}>
+                  {l}
                 </button>
-              </div>
+              ))}
             </div>
 
-            {/* Quick access from vocab list */}
-            {allWords.length>0 && !vicResult && (
-              <div style={{marginBottom:"1rem"}}>
-                <div style={{fontSize:".68rem",color:"#4a3a5a",marginBottom:".4rem"}}>Hoặc chọn từ trong danh sách:</div>
-                <div style={{display:"flex",gap:".35rem",flexWrap:"wrap",maxHeight:80,overflow:"hidden"}}>
-                  {shuffle(allWords).slice(0,12).map((w,i)=>(
-                    <button key={i} className="btn" onClick={()=>{ setVicWord(w.word); setTimeout(()=>document.getElementById("vic-btn")?.click(),50); }}
-                      style={{padding:".2rem .65rem",borderRadius:999,fontSize:".78rem",background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",color:"#7a6a8a"}}>
-                      {w.word}
-                    </button>
-                  ))}
+            {/* ── SINGLE WORD MODE ── */}
+            {vicMode==="word" && (
+              <div>
+                {/* Context filter */}
+                <div style={{marginBottom:".8rem"}}>
+                  <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".35rem",letterSpacing:".05em"}}>Context preference</div>
+                  <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                    {[["all","🌐 All","#60a5fa"],["daily","💬 Daily","#4ade80"],["work","💼 Work","#fbbf24"],["academic","🎓 Academic","#a78bfa"],["travel","✈️ Travel","#f97316"]].map(([val,label,col])=>(
+                      <button key={val} className="btn" onClick={()=>setVicContext(val)}
+                        style={{padding:".28rem .8rem",borderRadius:999,fontSize:".8rem",fontWeight:700,
+                          border:`1.5px solid ${vicContext===val?col+"cc":col+"44"}`,
+                          background:vicContext===val?col+"22":"transparent",
+                          color:vicContext===val?col:"#5a4a6a"}}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
+
+                <div style={{display:"flex",gap:".5rem",marginBottom:".8rem"}}>
+                  <input className="fi" style={{flex:1}}
+                    placeholder="e.g. nevertheless, turn down, pull off..."
+                    value={vicWord} onChange={e=>setVicWord(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"&&vicWord.trim()&&!vicLoading)document.getElementById("vic-btn")?.click();}}
+                  />
+                  <button id="vic-btn" className="btn" disabled={!vicWord.trim()||vicLoading}
+                    onClick={async()=>{
+                      setVicLoading(true); setVicResult(null);
+                      try { const r=await generateVocabInContext(vicWord.trim(),vicContext); setVicResult(r); }
+                      catch(e){ alert("Lỗi: "+e.message); }
+                      finally { setVicLoading(false); }
+                    }}
+                    style={{padding:".5rem 1.1rem",borderRadius:12,background:"linear-gradient(135deg,#60a5fa,#4ade80)",color:"white",border:"none",fontWeight:700,whiteSpace:"nowrap"}}>
+                    {vicLoading?"⏳...":"🔍 Look up"}
+                  </button>
+                </div>
+
+                {allWords.length>0&&!vicResult&&(
+                  <div style={{marginBottom:"1rem"}}>
+                    <div style={{fontSize:".68rem",color:"#4a3a5a",marginBottom:".4rem"}}>Or pick from your word list:</div>
+                    <div style={{display:"flex",gap:".35rem",flexWrap:"wrap",maxHeight:80,overflow:"hidden"}}>
+                      {shuffle(allWords).slice(0,12).map((w,i)=>(
+                        <button key={i} className="btn" onClick={()=>{setVicWord(w.word);setTimeout(()=>document.getElementById("vic-btn")?.click(),50);}}
+                          style={{padding:".2rem .65rem",borderRadius:999,fontSize:".78rem",background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",color:"#7a6a8a"}}>
+                          {w.word}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {vicLoading&&<div>{[85,65,75,55,70,45,60].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:9,width:`${w}%`}}/>)}</div>}
               </div>
             )}
 
-            {vicLoading && <div>{[85,65,75,55,70,45,60].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:9,width:`${w}%`}}/>)}</div>}
+            {/* ── TOPIC VOCAB MODE ── */}
+            {vicMode==="topic" && (
+              <div>
+                <div style={{fontSize:".78rem",color:"#7a8a9a",fontFamily:"'Crimson Pro',serif",marginBottom:".8rem",lineHeight:1.6}}>
+                  Enter a topic or situation → get 8-10 key vocabulary words with collocations and example sentences.
+                </div>
+                <div style={{display:"flex",gap:".5rem",marginBottom:".6rem"}}>
+                  <input className="fi" style={{flex:1}}
+                    placeholder="e.g. eating out, job interview, climate change, hospital visit..."
+                    value={vicTopic} onChange={e=>setVicTopic(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"&&vicTopic.trim()&&!vicLoading)document.getElementById("vic-topic-btn")?.click();}}
+                  />
+                  <button id="vic-topic-btn" className="btn" disabled={!vicTopic.trim()||vicLoading}
+                    onClick={async()=>{
+                      setVicLoading(true); setVicTopicResult(null);
+                      try { const r=await generateTopicVocab(vicTopic.trim()); setVicTopicResult(r); }
+                      catch(e){ alert("Lỗi: "+e.message); }
+                      finally { setVicLoading(false); }
+                    }}
+                    style={{padding:".5rem 1.1rem",borderRadius:12,background:"linear-gradient(135deg,#4ade80,#60a5fa)",color:"white",border:"none",fontWeight:700,whiteSpace:"nowrap"}}>
+                    {vicLoading?"⏳...":"📚 Generate"}
+                  </button>
+                </div>
+
+                {/* Quick topic suggestions */}
+                {!vicTopicResult&&(
+                  <div style={{display:"flex",gap:".35rem",flexWrap:"wrap",marginBottom:".8rem"}}>
+                    {["eating out","job interview","travel & transport","climate change","healthcare","social media","education system","working from home"].map(t=>(
+                      <button key={t} className="btn" onClick={()=>{setVicTopic(t);setTimeout(()=>document.getElementById("vic-topic-btn")?.click(),50);}}
+                        style={{padding:".2rem .7rem",borderRadius:999,fontSize:".75rem",background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.15)",color:"#4ade80"}}>
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                {vicLoading&&<div>{[85,65,75,55,70,45,60].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:9,width:`${w}%`}}/>)}</div>}
+
+                {/* Topic result */}
+                {vicTopicResult&&(
+                  <div className="fade-in">
+                    <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.1rem",color:"#4ade80",marginBottom:".8rem",textTransform:"capitalize"}}>
+                      📚 {vicTopicResult.topic}
+                    </div>
+
+                    {/* Vocabulary list */}
+                    <div style={{fontSize:".7rem",color:"#6a5a7a",letterSpacing:".08em",marginBottom:".5rem"}}>KEY VOCABULARY ({(vicTopicResult.vocabulary||[]).length} words)</div>
+                    {(vicTopicResult.vocabulary||[]).map((v,i)=>(
+                      <div key={i} style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:14,padding:".85rem 1rem",marginBottom:".6rem"}}>
+                        <div style={{display:"flex",alignItems:"baseline",gap:".6rem",flexWrap:"wrap",marginBottom:".3rem"}}>
+                          <span style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.05rem",color:"#93c5fd"}}>{v.word}</span>
+                          {v.ipa&&<span style={{fontSize:".78rem",color:"#5a7a9a"}}>{v.ipa}</span>}
+                          {v.pos&&<span style={{fontSize:".62rem",color:"#a78bfa",background:"rgba(167,139,250,.12)",borderRadius:4,padding:"1px 7px"}}>{v.pos}</span>}
+                          <button className="spkbtn btn" onClick={()=>speak(v.word,0.78)}>🔊</button>
+                        </div>
+                        <div style={{fontSize:".85rem",color:"#9a8ab0",marginBottom:".4rem",fontFamily:"'Crimson Pro',serif"}}>{v.definition}</div>
+                        {v.example&&(
+                          <div style={{display:"flex",alignItems:"center",gap:".5rem",marginBottom:".4rem"}}>
+                            <div style={{fontSize:".88rem",color:"#f0eaff",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",flex:1}}>"{v.example}"</div>
+                            <button className="spkbtn btn" onClick={()=>speak(v.example,0.85)}>🔊</button>
+                          </div>
+                        )}
+                        {v.collocations?.length>0&&(
+                          <div style={{display:"flex",gap:".3rem",flexWrap:"wrap"}}>
+                            {v.collocations.map((c,j)=>(
+                              <span key={j} onClick={()=>speak(c,0.8)}
+                                style={{fontSize:".75rem",color:"#fbbf24",background:"rgba(251,191,36,.08)",border:"1px solid rgba(251,191,36,.15)",borderRadius:6,padding:"1px 8px",cursor:"pointer",fontFamily:"'Crimson Pro',serif"}}>
+                                {c}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+
+                    {/* Topic phrases */}
+                    {vicTopicResult.topicPhrases?.length>0&&(
+                      <div style={{background:"rgba(96,165,250,.06)",border:"1px solid rgba(96,165,250,.15)",borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem"}}>
+                        <div style={{fontSize:".7rem",color:"#60a5fa",letterSpacing:".08em",marginBottom:".5rem"}}>💬 USEFUL PHRASES & CHUNKS</div>
+                        {vicTopicResult.topicPhrases.map((p,i)=>(
+                          <div key={i} style={{marginBottom:".45rem"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:".5rem",marginBottom:".15rem"}}>
+                              <span style={{fontFamily:"'Crimson Pro',serif",fontWeight:700,color:"#93c5fd",fontSize:".92rem"}}>{p.phrase}</span>
+                              <button className="spkbtn btn" style={{fontSize:".6rem"}} onClick={()=>speak(p.phrase,0.82)}>🔊</button>
+                            </div>
+                            {p.example&&<div style={{fontSize:".8rem",color:"#6a7a9a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",paddingLeft:".5rem"}}>e.g. "{p.example}"</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Common mistakes */}
+                    {vicTopicResult.commonMistakes?.length>0&&(
+                      <div style={{background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.15)",borderRadius:14,padding:".9rem 1rem",marginBottom:"1rem"}}>
+                        <div style={{fontSize:".7rem",color:"#f87171",letterSpacing:".08em",marginBottom:".5rem"}}>⚠️ COMMON MISTAKES</div>
+                        {vicTopicResult.commonMistakes.map((m,i)=>(
+                          <div key={i} style={{marginBottom:".5rem"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",marginBottom:".2rem"}}>
+                              <span style={{background:"rgba(248,113,113,.12)",borderRadius:6,padding:".1rem .55rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".88rem",textDecoration:"line-through"}}>{m.wrong}</span>
+                              <span style={{color:"#5a4a6a"}}>→</span>
+                              <span style={{background:"rgba(74,222,128,.12)",borderRadius:6,padding:".1rem .55rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:700,fontSize:".88rem"}}>{m.correct}</span>
+                            </div>
+                            {m.note&&<div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>💡 {m.note}</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <button className="btn" onClick={()=>{setVicTopicResult(null);setVicTopic("");}}
+                      style={{width:"100%",padding:".75rem",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#7a6a8a",fontWeight:600}}>
+                      📚 New topic
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Results */}
             {vicResult && (
