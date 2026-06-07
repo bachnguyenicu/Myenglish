@@ -5659,6 +5659,19 @@ function VocabApp({ apiKey }) {
                             ))}
                           </div>
                         )}
+                        {/* Save button */}
+                        <button className="btn" onClick={()=>{
+                          const newW={word:v.word,type:v.pos||"",meaning:v.definition||"",level:"B1",example:v.example||""};
+                          if(allWords.some(x=>x.word.toLowerCase()===newW.word.toLowerCase())){
+                            alert(`"${v.word}" đã có trong từ điển rồi!`); return;
+                          }
+                          setAllWords(prev=>[...prev,newW]);
+                          alert(`✅ Đã lưu "${v.word}"!`);
+                        }} style={{marginTop:".5rem",padding:".28rem .75rem",borderRadius:8,
+                          background:"rgba(74,222,128,.1)",border:"1px solid rgba(74,222,128,.2)",
+                          color:"#4ade80",fontSize:".75rem",fontWeight:700}}>
+                          💾 Lưu từ này
+                        </button>
                       </div>
                     ))}
 
@@ -5667,10 +5680,20 @@ function VocabApp({ apiKey }) {
                       <div style={{background:"rgba(96,165,250,.06)",border:"1px solid rgba(96,165,250,.15)",borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem"}}>
                         <div style={{fontSize:".7rem",color:"#60a5fa",letterSpacing:".08em",marginBottom:".5rem"}}>💬 USEFUL PHRASES & CHUNKS</div>
                         {vicTopicResult.topicPhrases.map((p,i)=>(
-                          <div key={i} style={{marginBottom:".45rem"}}>
+                          <div key={i} style={{marginBottom:".5rem",paddingBottom:".5rem",borderBottom:i<vicTopicResult.topicPhrases.length-1?"1px solid rgba(255,255,255,.04)":"none"}}>
                             <div style={{display:"flex",alignItems:"center",gap:".5rem",marginBottom:".15rem"}}>
-                              <span style={{fontFamily:"'Crimson Pro',serif",fontWeight:700,color:"#93c5fd",fontSize:".92rem"}}>{p.phrase}</span>
+                              <span style={{fontFamily:"'Crimson Pro',serif",fontWeight:700,color:"#93c5fd",fontSize:".92rem",flex:1}}>{p.phrase}</span>
                               <button className="spkbtn btn" style={{fontSize:".6rem"}} onClick={()=>speak(p.phrase,0.82)}>🔊</button>
+                              <button className="btn" onClick={()=>{
+                                const newW={word:p.phrase,type:"phrase",meaning:p.example||"",level:"B1",example:p.example||""};
+                                if(allWords.some(x=>x.word.toLowerCase()===newW.word.toLowerCase())){
+                                  alert(`"${p.phrase}" đã có trong từ điển rồi!`); return;
+                                }
+                                setAllWords(prev=>[...prev,newW]);
+                                alert(`✅ Đã lưu "${p.phrase}"!`);
+                              }} style={{padding:".18rem .55rem",borderRadius:7,background:"rgba(96,165,250,.1)",border:"1px solid rgba(96,165,250,.2)",color:"#60a5fa",fontSize:".72rem",fontWeight:700,whiteSpace:"nowrap"}}>
+                                💾
+                              </button>
                             </div>
                             {p.example&&<div style={{fontSize:".8rem",color:"#6a7a9a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",paddingLeft:".5rem"}}>e.g. "{p.example}"</div>}
                           </div>
