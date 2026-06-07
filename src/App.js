@@ -122,7 +122,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", IELTS_S:"ielts_s", PARAPHRASE:"paraphrase", ROLEPLAY:"roleplay", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
+const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", IELTS_S:"ielts_s", PARAPHRASE:"paraphrase", ROLEPLAY:"roleplay", VIC:"vic", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 
@@ -1137,6 +1137,40 @@ Reply ONLY with JSON (single quotes inside strings):
 
 
 
+
+// ─── OpenAI — Vocabulary in Context ──────────────────────────────────────
+async function generateVocabInContext(word, context) {
+  const contextMap = {
+    all:      "everyday conversation, work, travel, and academic writing",
+    daily:    "everyday casual conversation",
+    work:     "professional workplace and business",
+    academic: "academic writing and IELTS",
+    travel:   "travel and tourism",
+  };
+  const ctxDesc = contextMap[context] || contextMap.all;
+
+  const prompt = `Create vocabulary learning examples for the English word/phrase: "${word}"
+Target context: ${ctxDesc}
+
+Provide:
+1. A clear definition
+2. 5 example sentences in different real-life situations (${ctxDesc})
+3. Common collocations
+4. Common mistakes Vietnamese learners make with this word
+
+Reply ONLY with JSON (single quotes inside strings, Vietnamese with full diacritics):
+{"word":"${word}","ipa":"/pronunciation/","partOfSpeech":"noun/verb/adj/etc","definition":"definition in Vietnamese","examples":[{"situation":"Tình huống cụ thể (tiếng Việt)","sentence":"Example sentence using the word naturally.","translation":"Dịch nghĩa câu ví dụ tiếng Việt","highlight":"the exact word/phrase used"}],"collocations":[{"phrase":"common collocation","meaning":"nghĩa tiếng Việt","example":"example sentence"}],"commonMistakes":[{"wrong":"incorrect usage","correct":"correct usage","note":"giải thích tiếng Việt"}],"tip":"mẹo nhớ từ tiếng Việt"}`;
+
+  const data = await openAIFetch({
+    system: "You are an expert English vocabulary teacher. Output ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics.",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 1500,
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Lỗi đọc kết quả"); }
+}
+
 // ─── OpenAI — Generate custom roleplay scenario ───────────────────────────
 async function generateScenario(topic) {
   const prompt = `Create a realistic English roleplay scenario for a Vietnamese learner based on this topic: "${topic}"
@@ -1292,6 +1326,11 @@ function VocabApp({ apiKey }) {
   const rpMessagesRef = useRef([]);
   const [rpCustomTopic, setRpCustomTopic] = useState("");
   const [rpGenLoading, setRpGenLoading]   = useState(false);
+  // Vocabulary in Context
+  const [vicWord,     setVicWord]     = useState("");
+  const [vicResult,   setVicResult]   = useState(null);
+  const [vicLoading,  setVicLoading]  = useState(false);
+  const [vicContext,  setVicContext]  = useState("all");
   const [spkSimPhase,   setSpkSimPhase]   = useState("menu"); // menu|p1|p2|p3|review
   const [spkSimPartNum, setSpkSimPartNum] = useState(0);
   const [spkSimQs,      setSpkSimQs]      = useState([]);   // questions for current part
@@ -1722,6 +1761,7 @@ function VocabApp({ apiKey }) {
     .reading-opt.ok{background:rgba(74,222,128,.15);border-color:#4ade80!important;color:#4ade80;}
     .reading-opt.no{background:rgba(248,113,113,.15);border-color:#f87171!important;color:#f87171;}
     .journal-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .vic-example{background:rgba(255,255,255,.03);border-left:3px solid;border-radius:0 12px 12px 0;padding:.7rem 1rem;margin-bottom:.6rem;}
     .rp-bubble-user{background:linear-gradient(135deg,rgba(167,139,250,.25),rgba(236,72,153,.15));border:1px solid rgba(167,139,250,.3);border-radius:18px 18px 4px 18px;padding:.75rem 1rem;margin-bottom:.6rem;align-self:flex-end;max-width:85%;}
     .rp-bubble-ai{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:18px 18px 18px 4px;padding:.75rem 1rem;margin-bottom:.6rem;align-self:flex-start;max-width:85%;}
     .pp-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:1rem 1.1rem;margin-bottom:.7rem;transition:border-color .2s;}
@@ -1778,6 +1818,7 @@ function VocabApp({ apiKey }) {
     [MODES.IELTS_S]:"🎙 IELTS Speaking",
     [MODES.PARAPHRASE]:"✍️ Paraphrase",
     [MODES.ROLEPLAY]:"🎭 Roleplay",
+    [MODES.VIC]:"🔤 Vocab in Context",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
   };
@@ -5437,6 +5478,171 @@ function VocabApp({ apiKey }) {
 
 
 
+
+
+        {/* ══ VOCABULARY IN CONTEXT ══ */}
+        {mode===MODES.VIC && (
+          <div>
+            {/* Header */}
+            <div style={{background:"linear-gradient(145deg,rgba(96,165,250,.07),rgba(74,222,128,.05))",border:"1px solid rgba(96,165,250,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#93c5fd",marginBottom:".25rem"}}>🔤 Vocabulary in Context</div>
+              <div style={{fontSize:".83rem",color:"#7a8a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+                Nhập từ bất kỳ → AI tạo 5 câu ví dụ thực tế trong các tình huống khác nhau + collocations + lỗi thường gặp.
+              </div>
+            </div>
+
+            {/* Context filter */}
+            <div style={{marginBottom:".8rem"}}>
+              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".35rem",letterSpacing:".05em"}}>Ngữ cảnh ưu tiên</div>
+              <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                {[["all","🌐 All","#60a5fa"],["daily","💬 Daily","#4ade80"],["work","💼 Work","#fbbf24"],["academic","🎓 Academic","#a78bfa"],["travel","✈️ Travel","#f97316"]].map(([val,label,col])=>(
+                  <button key={val} className="btn" onClick={()=>setVicContext(val)}
+                    style={{padding:".28rem .8rem",borderRadius:999,fontSize:".8rem",fontWeight:700,
+                      border:`1.5px solid ${vicContext===val?col+"cc":col+"44"}`,
+                      background:vicContext===val?col+"22":"transparent",
+                      color:vicContext===val?col:"#5a4a6a"}}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Word input */}
+            <div style={{marginBottom:".8rem"}}>
+              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Từ hoặc cụm từ muốn học</div>
+              <div style={{display:"flex",gap:".5rem"}}>
+                <input className="fi" style={{flex:1}}
+                  placeholder="vd: nevertheless, turn down, give away, pull off..."
+                  value={vicWord} onChange={e=>setVicWord(e.target.value)}
+                  onKeyDown={e=>{if(e.key==="Enter"&&vicWord.trim()&&!vicLoading)document.getElementById("vic-btn")?.click();}}
+                />
+                <button id="vic-btn" className="btn" disabled={!vicWord.trim()||vicLoading}
+                  onClick={async()=>{
+                    setVicLoading(true); setVicResult(null);
+                    try {
+                      const r = await generateVocabInContext(vicWord.trim(), vicContext);
+                      setVicResult(r);
+                    } catch(e){ alert("Lỗi: "+e.message); }
+                    finally { setVicLoading(false); }
+                  }}
+                  style={{padding:".5rem 1.1rem",borderRadius:12,background:"linear-gradient(135deg,#60a5fa,#4ade80)",color:"white",border:"none",fontWeight:700,whiteSpace:"nowrap"}}>
+                  {vicLoading?"⏳...":"🔍 Tra"}
+                </button>
+              </div>
+            </div>
+
+            {/* Quick access from vocab list */}
+            {allWords.length>0 && !vicResult && (
+              <div style={{marginBottom:"1rem"}}>
+                <div style={{fontSize:".68rem",color:"#4a3a5a",marginBottom:".4rem"}}>Hoặc chọn từ trong danh sách:</div>
+                <div style={{display:"flex",gap:".35rem",flexWrap:"wrap",maxHeight:80,overflow:"hidden"}}>
+                  {shuffle(allWords).slice(0,12).map((w,i)=>(
+                    <button key={i} className="btn" onClick={()=>{ setVicWord(w.word); setTimeout(()=>document.getElementById("vic-btn")?.click(),50); }}
+                      style={{padding:".2rem .65rem",borderRadius:999,fontSize:".78rem",background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.08)",color:"#7a6a8a"}}>
+                      {w.word}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {vicLoading && <div>{[85,65,75,55,70,45,60].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:9,width:`${w}%`}}/>)}</div>}
+
+            {/* Results */}
+            {vicResult && (
+              <div className="fade-in">
+                {/* Word header */}
+                <div style={{background:"linear-gradient(145deg,#1a1030,#0e1422)",border:"1px solid rgba(96,165,250,.25)",borderRadius:18,padding:"1.1rem 1.3rem",marginBottom:"1rem"}}>
+                  <div style={{display:"flex",alignItems:"baseline",gap:".7rem",flexWrap:"wrap",marginBottom:".3rem"}}>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontWeight:900,fontSize:"1.6rem",color:"#93c5fd"}}>{vicResult.word}</div>
+                    {vicResult.ipa&&<div style={{fontSize:".85rem",color:"#5a7a9a",fontFamily:"'Crimson Pro',serif"}}>{vicResult.ipa}</div>}
+                    {vicResult.partOfSpeech&&<span style={{fontSize:".68rem",color:"#a78bfa",background:"rgba(167,139,250,.15)",borderRadius:6,padding:"1px 8px"}}>{vicResult.partOfSpeech}</span>}
+                    <button className="spkbtn btn" onClick={()=>speak(vicResult.word,0.75)}>🔊</button>
+                  </div>
+                  <div style={{fontSize:".9rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif"}}>{vicResult.definition}</div>
+                  {vicResult.tip&&<div style={{fontSize:".8rem",color:"#fbbf24",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginTop:".4rem"}}>💡 {vicResult.tip}</div>}
+                </div>
+
+                {/* 5 Examples */}
+                <div style={{fontSize:".7rem",color:"#6a5a7a",letterSpacing:".08em",marginBottom:".6rem"}}>📖 5 CÂU VÍ DỤ THỰC TẾ</div>
+                {(vicResult.examples||[]).map((ex,i)=>{
+                  const colors=["#60a5fa","#4ade80","#fbbf24","#a78bfa","#f97316"];
+                  const col=colors[i%colors.length];
+                  return(
+                    <div key={i} className="vic-example" style={{borderLeftColor:col,marginBottom:".65rem"}}>
+                      <div style={{fontSize:".65rem",color:col,fontWeight:700,letterSpacing:".05em",marginBottom:".3rem",textTransform:"uppercase"}}>
+                        {ex.situation}
+                      </div>
+                      <div style={{display:"flex",alignItems:"flex-start",gap:".5rem",marginBottom:".25rem"}}>
+                        <div style={{flex:1,fontSize:".95rem",fontFamily:"'Crimson Pro',serif",color:"#f0eaff",lineHeight:1.7}}>
+                          {ex.highlight ? (
+                            ex.sentence.split(ex.highlight).map((part,j,arr)=>(
+                              <span key={j}>
+                                {part}
+                                {j<arr.length-1&&<mark style={{background:col+"30",color:col,borderRadius:4,padding:"0 2px",fontWeight:700}}>{ex.highlight}</mark>}
+                              </span>
+                            ))
+                          ) : ex.sentence}
+                        </div>
+                        <button className="spkbtn btn" style={{flexShrink:0}} onClick={()=>speak(ex.sentence,0.85)}>🔊</button>
+                      </div>
+                      <div style={{fontSize:".78rem",color:"#6a5a7a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>{ex.translation}</div>
+                    </div>
+                  );
+                })}
+
+                {/* Collocations */}
+                {vicResult.collocations?.length>0&&(
+                  <div style={{background:"rgba(251,191,36,.06)",border:"1px solid rgba(251,191,36,.15)",borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem"}}>
+                    <div style={{fontSize:".7rem",color:"#fbbf24",letterSpacing:".08em",marginBottom:".5rem"}}>🔗 COLLOCATIONS PHỔ BIẾN</div>
+                    {vicResult.collocations.map((c,i)=>(
+                      <div key={i} style={{marginBottom:".45rem"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:".5rem",marginBottom:".15rem"}}>
+                          <span style={{fontFamily:"'Crimson Pro',serif",fontWeight:700,color:"#fde68a",fontSize:".95rem"}}>{c.phrase}</span>
+                          <span style={{fontSize:".75rem",color:"#6a5a7a"}}>— {c.meaning}</span>
+                          <button className="spkbtn btn" style={{fontSize:".6rem"}} onClick={()=>speak(c.phrase,0.82)}>🔊</button>
+                        </div>
+                        {c.example&&<div style={{fontSize:".82rem",color:"#9a8a6a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",paddingLeft:".5rem"}}>e.g. {c.example}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Common mistakes */}
+                {vicResult.commonMistakes?.length>0&&(
+                  <div style={{background:"rgba(248,113,113,.06)",border:"1px solid rgba(248,113,113,.15)",borderRadius:14,padding:".9rem 1rem",marginBottom:"1rem"}}>
+                    <div style={{fontSize:".7rem",color:"#f87171",letterSpacing:".08em",marginBottom:".5rem"}}>⚠️ LỖI THƯỜNG GẶP (đặc biệt với người Việt)</div>
+                    {vicResult.commonMistakes.map((m,i)=>(
+                      <div key={i} style={{marginBottom:".5rem"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",marginBottom:".2rem"}}>
+                          <span style={{background:"rgba(248,113,113,.12)",borderRadius:6,padding:".1rem .55rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".88rem",textDecoration:"line-through"}}>{m.wrong}</span>
+                          <span style={{color:"#5a4a6a"}}>→</span>
+                          <span style={{background:"rgba(74,222,128,.12)",borderRadius:6,padding:".1rem .55rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:700,fontSize:".88rem"}}>{m.correct}</span>
+                        </div>
+                        {m.note&&<div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>💡 {m.note}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div style={{display:"flex",gap:".6rem"}}>
+                  <button className="btn" onClick={()=>{setVicResult(null);setVicWord("");}}
+                    style={{flex:1,padding:".75rem",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#7a6a8a",fontWeight:600}}>
+                    🔍 Từ mới
+                  </button>
+                  <button className="btn" onClick={()=>{
+                    const w={word:vicResult.word,type:vicResult.partOfSpeech||"",meaning:vicResult.definition||"",level:"B1",example:(vicResult.examples?.[0]?.sentence)||""};
+                    setAllWords(prev=>{if(prev.some(x=>x.word.toLowerCase()===w.word.toLowerCase()))return prev;return [...prev,w];});
+                    alert(`✅ Đã thêm "${vicResult.word}" vào danh sách từ!`);
+                  }} style={{flex:1,padding:".75rem",borderRadius:12,background:"linear-gradient(135deg,#60a5fa,#4ade80)",color:"white",border:"none",fontWeight:700}}>
+                    ➕ Thêm vào từ điển
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ══ ROLEPLAY ══ */}
         {mode===MODES.ROLEPLAY && (()=>{
