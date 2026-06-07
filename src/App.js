@@ -122,7 +122,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", IELTS_S:"ielts_s", PARAPHRASE:"paraphrase", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
+const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", IELTS_S:"ielts_s", PARAPHRASE:"paraphrase", ROLEPLAY:"roleplay", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 
@@ -1135,6 +1135,78 @@ Reply ONLY with JSON (single quotes inside strings):
   catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Lỗi đọc kết quả"); }
 }
 
+
+
+// ─── OpenAI — Generate custom roleplay scenario ───────────────────────────
+async function generateScenario(topic) {
+  const prompt = `Create a realistic English roleplay scenario for a Vietnamese learner based on this topic: "${topic}"
+
+Reply ONLY with JSON (single quotes inside strings):
+{"id":"custom","icon":"🎭","title":"Short title (3-4 words)","character":"Name, role/job description","situation":"1-2 sentence scenario description","personality":"3 personality traits","register":"formal/casual/semi-formal/etc","color":"#60a5fa","tags":["topic tag","level tag"]}`;
+
+  const data = await openAIFetch({
+    system: "You are a creative English teacher. Output ONLY compact single-line JSON. Single quotes inside strings.",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 300,
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Lỗi tạo scenario"); }
+}
+
+// ─── OpenAI — Roleplay: get AI reply ─────────────────────────────────────
+async function getRoleplayReply(scenario, messages, userMessage) {
+  const systemPrompt = `You are playing the role of: ${scenario.character}
+Scenario: ${scenario.situation}
+Your personality: ${scenario.personality}
+
+Rules:
+- Stay in character at all times
+- Respond naturally in English (1-3 sentences max per turn)
+- If the user makes a grammar mistake, subtly use the correct form in your reply (don't point it out)
+- Keep the conversation flowing naturally
+- Match the register: ${scenario.register}`;
+
+  const history = messages.slice(-10).map(m => ({
+    role: m.role === "user" ? "user" : "assistant",
+    content: m.text
+  }));
+  history.push({ role: "user", content: userMessage });
+
+  const data = await openAIFetch({
+    system: systemPrompt,
+    messages: history,
+    max_tokens: 150,
+  });
+  return (data.content||[]).map(b=>b.text||"").join("").trim();
+}
+
+// ─── OpenAI — Roleplay: review conversation ───────────────────────────────
+async function reviewRoleplay(scenario, messages) {
+  const transcript = messages.map(m =>
+    `${m.role==="user"?"You":scenario.character}: ${m.text}`
+  ).join("\n");
+
+  const prompt = `Review this English roleplay conversation for a Vietnamese learner.
+
+Scenario: ${scenario.situation}
+Transcript:
+${transcript}
+
+Evaluate the learner's performance and provide detailed feedback.
+Reply ONLY with JSON (single quotes inside strings, Vietnamese with full diacritics):
+{"overallScore":7,"fluency":{"score":7,"comment":"nhận xét tiếng Việt"},"vocabulary":{"score":7,"comment":"nhận xét tiếng Việt"},"grammar":{"score":6,"comment":"nhận xét tiếng Việt"},"naturalness":{"score":7,"comment":"nhận xét tiếng Việt về sự tự nhiên"},"errors":[{"original":"câu user nói sai","corrected":"câu đúng","explanation":"giải thích tiếng Việt"}],"improvements":["gợi ý cải thiện 1 tiếng Việt","gợi ý 2","gợi ý 3"],"modelPhrases":["useful phrase from this scenario","phrase 2","phrase 3"],"encouragement":"lời động viên tiếng Việt có dấu"}`;
+
+  const data = await openAIFetch({
+    system: "You are a strict English speaking coach. Output ONLY compact single-line JSON. Single quotes in strings. Full Vietnamese diacritics.",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 1200,
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Lỗi đọc kết quả"); }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
   const [allWords, setAllWords] = useState(() => loadState("lx_words", BUILT_IN));
@@ -1206,7 +1278,20 @@ function VocabApp({ apiKey }) {
   const [ppInput,     setPpInput]     = useState("");
   const [ppResult,    setPpResult]    = useState(null);
   const [ppLoading,   setPpLoading]   = useState(false);
-  const [ppContext,   setPpContext]   = useState("general"); // general|academic|business|casual
+  const [ppContext,   setPpContext]   = useState("general");
+  // Roleplay
+  const [rpPhase,     setRpPhase]     = useState("menu"); // menu|chat|review
+  const [rpScenario,  setRpScenario]  = useState(null);
+  const [rpMessages,  setRpMessages]  = useState([]); // [{role,text,ts}]
+  const [rpInput,     setRpInput]     = useState("");
+  const [rpListening, setRpListening] = useState(false);
+  const [rpLoading,   setRpLoading]   = useState(false);
+  const [rpReview,    setRpReview]    = useState(null);
+  const [rpReviewLoading, setRpReviewLoading] = useState(false);
+  const [rpTurn,      setRpTurn]      = useState(0);
+  const rpMessagesRef = useRef([]);
+  const [rpCustomTopic, setRpCustomTopic] = useState("");
+  const [rpGenLoading, setRpGenLoading]   = useState(false);
   const [spkSimPhase,   setSpkSimPhase]   = useState("menu"); // menu|p1|p2|p3|review
   const [spkSimPartNum, setSpkSimPartNum] = useState(0);
   const [spkSimQs,      setSpkSimQs]      = useState([]);   // questions for current part
@@ -1637,6 +1722,8 @@ function VocabApp({ apiKey }) {
     .reading-opt.ok{background:rgba(74,222,128,.15);border-color:#4ade80!important;color:#4ade80;}
     .reading-opt.no{background:rgba(248,113,113,.15);border-color:#f87171!important;color:#f87171;}
     .journal-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .rp-bubble-user{background:linear-gradient(135deg,rgba(167,139,250,.25),rgba(236,72,153,.15));border:1px solid rgba(167,139,250,.3);border-radius:18px 18px 4px 18px;padding:.75rem 1rem;margin-bottom:.6rem;align-self:flex-end;max-width:85%;}
+    .rp-bubble-ai{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:18px 18px 18px 4px;padding:.75rem 1rem;margin-bottom:.6rem;align-self:flex-start;max-width:85%;}
     .pp-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:1rem 1.1rem;margin-bottom:.7rem;transition:border-color .2s;}
     .pp-card:hover{border-color:rgba(167,139,250,.25);}
     .pp-level{font-size:.62rem;font-weight:700;letter-spacing:.06em;border-radius:999px;padding:2px 10px;display:inline-block;margin-bottom:.4rem;}
@@ -1690,6 +1777,7 @@ function VocabApp({ apiKey }) {
     [MODES.IELTS_W]:"🖊 IELTS Writing",
     [MODES.IELTS_S]:"🎙 IELTS Speaking",
     [MODES.PARAPHRASE]:"✍️ Paraphrase",
+    [MODES.ROLEPLAY]:"🎭 Roleplay",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
   };
@@ -5348,6 +5436,312 @@ function VocabApp({ apiKey }) {
         )}
 
 
+
+
+        {/* ══ ROLEPLAY ══ */}
+        {mode===MODES.ROLEPLAY && (()=>{
+
+
+          const SCENARIOS = [
+            { id:"doctor",    icon:"👨‍⚕️", title:"Doctor Consultation",   character:"Dr. Sarah Chen, a friendly but professional GP",      situation:"Patient visiting a doctor for a health checkup",                personality:"Empathetic, thorough, asks follow-up questions",      register:"formal but warm",      color:"#4ade80",  tags:["Healthcare","B1+"] },
+            { id:"interview", icon:"💼", title:"Job Interview",           character:"Mr. James Miller, HR Manager at a tech company",       situation:"Job interview for a software engineer position",              personality:"Professional, evaluative, probing",                   register:"formal",               color:"#60a5fa",  tags:["Career","B2+"] },
+            { id:"hotel",     icon:"🏨", title:"Hotel Check-in",          character:"Emma, a helpful hotel receptionist",                   situation:"Checking into a 4-star hotel, there's an issue with the room", personality:"Polite, solution-oriented, professional",             register:"formal service",       color:"#fbbf24",  tags:["Travel","B1"] },
+            { id:"cafe",      icon:"☕", title:"Coffee Shop Chat",         character:"Alex, a friendly barista who loves conversation",       situation:"Ordering coffee and having a casual chat about your day",     personality:"Casual, curious, talkative",                          register:"very casual",          color:"#f97316",  tags:["Daily","A2+"] },
+            { id:"landlord",  icon:"🏠", title:"Talking to Landlord",     character:"Mr. Thompson, your apartment landlord",                situation:"Reporting a broken air conditioner and requesting repair",    personality:"Practical, a bit impatient, fair",                    register:"semi-formal",          color:"#a78bfa",  tags:["Daily","B1"] },
+            { id:"professor", icon:"🎓", title:"Office Hours",            character:"Prof. Williams, your university professor",            situation:"Asking for an extension on your assignment deadline",        personality:"Strict but fair, values academic integrity",          register:"formal academic",      color:"#f472b6",  tags:["Academic","B2+"] },
+            { id:"customs",   icon:"✈️", title:"Airport Immigration",     character:"Officer Chen, an immigration officer",                 situation:"Arriving at an international airport, going through customs", personality:"Serious, professional, by-the-book",                  register:"formal official",      color:"#34d399",  tags:["Travel","B1+"] },
+            { id:"complaint", icon:"😤", title:"Customer Complaint",      character:"Lisa, customer service rep at an electronics store",   situation:"Returning a faulty laptop you bought last week",             personality:"Patient, empathetic, follows company policy",         register:"formal service",       color:"#fb923c",  tags:["Business","B2"] },
+          ];
+
+          const resetRp = () => {
+            setRpPhase("menu"); setRpScenario(null);
+            setRpMessages([]); rpMessagesRef.current=[];
+            setRpInput(""); setRpReview(null); setRpTurn(0);
+          };
+
+          // ── MENU ──────────────────────────────────────────────────────
+          if(rpPhase==="menu") return (
+            <div>
+              <div style={{background:"linear-gradient(145deg,rgba(96,165,250,.07),rgba(236,72,153,.05))",border:"1px solid rgba(96,165,250,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
+                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#93c5fd",marginBottom:".25rem"}}>🎭 Roleplay</div>
+                <div style={{fontSize:".83rem",color:"#7a8a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+                  Hội thoại với nhân vật AI trong tình huống thực tế. Dùng văn bản hoặc giọng nói. AI ở trong vai cho đến khi bạn kết thúc.
+                </div>
+              </div>
+              {/* Custom scenario input */}
+              <div style={{marginBottom:"1rem"}}>
+                <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>✨ Tự tạo scenario (để trống = chọn từ danh sách)</div>
+                <div style={{display:"flex",gap:".5rem"}}>
+                  <input className="fi" style={{flex:1}} placeholder="vd: negotiating salary, visiting dentist, meeting new colleagues..."
+                    value={rpCustomTopic} onChange={e=>setRpCustomTopic(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"&&rpCustomTopic.trim()&&!rpGenLoading)document.getElementById("rp-custom-btn")?.click();}}
+                  />
+                  <button id="rp-custom-btn" className="btn" disabled={!rpCustomTopic.trim()||rpGenLoading}
+                    onClick={async()=>{
+                      setRpGenLoading(true);
+                      try {
+                        const sc = await generateScenario(rpCustomTopic.trim());
+                        sc.id = "custom_"+Date.now();
+                        setRpScenario(sc); setRpMessages([]); rpMessagesRef.current=[];
+                        setRpTurn(0); setRpReview(null); setRpLoading(true);
+                        setRpGenLoading(false);
+                        const greeting = await getRoleplayReply(sc, [], "Hello, let's start.");
+                        const msg = {role:"ai",text:greeting,ts:Date.now()};
+                        setRpMessages([msg]); rpMessagesRef.current=[msg];
+                        setRpPhase("chat");
+                        setTimeout(()=>speak(greeting,0.88),300);
+                      } catch(e){ alert("Lỗi: "+e.message); setRpScenario(null); }
+                      finally { setRpGenLoading(false); setRpLoading(false); }
+                    }}
+                    style={{padding:".5rem 1rem",borderRadius:12,background:"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:".88rem",whiteSpace:"nowrap"}}>
+                    {rpGenLoading?"⏳...":"🎭 Tạo"}
+                  </button>
+                </div>
+                {rpGenLoading&&<div style={{marginTop:".5rem"}}>{[70,50,60].map((w,i)=><div key={i} className="shimmer" style={{height:10,borderRadius:5,marginBottom:6,width:`${w}%`}}/>)}</div>}
+              </div>
+
+              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".5rem",letterSpacing:".05em"}}>📋 HOẶC CHỌN TỪ DANH SÁCH</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".6rem"}}>
+                {SCENARIOS.map(sc=>(
+                  <button key={sc.id} className="btn" onClick={async()=>{
+                    setRpScenario(sc); setRpMessages([]); rpMessagesRef.current=[];
+                    setRpTurn(0); setRpReview(null); setRpLoading(true);
+                    try {
+                      const greeting = await getRoleplayReply(sc, [], "Hello, let's start.");
+                      const msg = {role:"ai",text:greeting,ts:Date.now()};
+                      setRpMessages([msg]); rpMessagesRef.current=[msg];
+                    } catch(e){ alert("Lỗi: "+e.message); setRpScenario(null); return; }
+                    finally { setRpLoading(false); }
+                    setRpPhase("chat");
+                    setTimeout(()=>speak(greeting,0.88),300);
+                  }} disabled={rpLoading}
+                    style={{padding:".85rem .8rem",borderRadius:16,background:`${sc.color}0d`,border:`1.5px solid ${sc.color}33`,textAlign:"left",opacity:rpLoading?0.6:1,transition:"border-color .2s"}}>
+                    <div style={{fontSize:"1.5rem",marginBottom:".3rem"}}>{sc.icon}</div>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:sc.color,fontSize:".9rem",marginBottom:".2rem"}}>{sc.title}</div>
+                    <div style={{fontSize:".72rem",color:"#5a4a6a",lineHeight:1.4,fontFamily:"'Crimson Pro',serif"}}>{sc.situation.slice(0,55)}...</div>
+                    <div style={{display:"flex",gap:".25rem",marginTop:".4rem",flexWrap:"wrap"}}>
+                      {sc.tags.map(t=><span key={t} style={{fontSize:".6rem",color:sc.color+"99",background:sc.color+"12",borderRadius:999,padding:"1px 7px"}}>{t}</span>)}
+                    </div>
+                  </button>
+                ))}
+              </div>
+              {rpLoading&&<div style={{marginTop:".8rem"}}>{[80,60,70].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:8,width:`${w}%`}}/>)}</div>}
+            </div>
+          );
+
+          // ── REVIEW ────────────────────────────────────────────────────
+          if(rpPhase==="review") return (
+            <div>
+              {!rpReview ? (
+                <div style={{textAlign:"center",padding:"1.5rem"}}>
+                  <div style={{fontSize:"3rem",marginBottom:".5rem"}}>🎭</div>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.2rem",color:"#93c5fd",marginBottom:".4rem"}}>Kết thúc roleplay!</div>
+                  <div style={{fontSize:".85rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",marginBottom:"1.2rem"}}>{rpMessages.filter(m=>m.role==="user").length} lượt bạn nói</div>
+                  <button className="btn" onClick={async()=>{
+                    setRpReviewLoading(true);
+                    try { const r=await reviewRoleplay(rpScenario,rpMessages); setRpReview(r); }
+                    catch(e){ alert("Lỗi: "+e.message); }
+                    finally { setRpReviewLoading(false); }
+                  }} disabled={rpReviewLoading}
+                    style={{padding:".9rem 2rem",borderRadius:14,background:rpReviewLoading?"rgba(96,165,250,.2)":"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                    {rpReviewLoading?"⏳ AI đang đánh giá...":"📊 Xem đánh giá"}
+                  </button>
+                  {rpReviewLoading&&<div style={{marginTop:".8rem"}}>{[75,55,65,45].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:8,width:`${w}%`}}/>)}</div>}
+                </div>
+              ) : (
+                <div className="fade-in">
+                  {/* Overall */}
+                  <div style={{background:"rgba(0,0,0,.3)",border:"2px solid rgba(96,165,250,.3)",borderRadius:20,padding:"1.1rem 1.3rem",marginBottom:"1rem",display:"flex",alignItems:"center",gap:"1rem"}}>
+                    <div style={{textAlign:"center",minWidth:72}}>
+                      <div className="ielts-band" style={{color:rpReview.overallScore>=7?"#4ade80":rpReview.overallScore>=5?"#fbbf24":"#f87171",fontSize:"2.5rem",lineHeight:1}}>{rpReview.overallScore}</div>
+                      <div style={{fontSize:".6rem",color:"#5a4a6a"}}>/10</div>
+                    </div>
+                    <div>
+                      <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:"#93c5fd"}}>{rpScenario.icon} {rpScenario.title}</div>
+                      <div style={{fontSize:".82rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",marginTop:".15rem"}}>{rpReview.encouragement}</div>
+                    </div>
+                  </div>
+
+                  {/* 4 scores */}
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".5rem",marginBottom:".8rem"}}>
+                    {[["fluency","🗣 Fluency"],["vocabulary","📚 Vocabulary"],["grammar","⚙️ Grammar"],["naturalness","✨ Naturalness"]].map(([k,l])=>{
+                      const c=rpReview[k]; if(!c) return null;
+                      const col=c.score>=7?"#4ade80":c.score>=5?"#fbbf24":"#f87171";
+                      return(
+                        <div key={k} className="ielts-criterion">
+                          <div style={{display:"flex",justifyContent:"space-between",marginBottom:".2rem"}}>
+                            <div style={{fontSize:".82rem",fontWeight:700,color:"#d4c8f0"}}>{l}</div>
+                            <div style={{fontFamily:"'Playfair Display',serif",fontWeight:900,color:col,fontSize:"1.1rem"}}>{c.score}</div>
+                          </div>
+                          <div style={{fontSize:".78rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.5}}>{c.comment}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* Errors */}
+                  {rpReview.errors?.length>0&&(
+                    <div className="ielts-criterion" style={{borderColor:"rgba(248,113,113,.2)",marginBottom:".6rem"}}>
+                      <div style={{fontSize:".7rem",color:"#f87171",letterSpacing:".08em",marginBottom:".5rem"}}>❌ LỖI CẦN SỬA</div>
+                      {rpReview.errors.map((e,i)=>(
+                        <div key={i} style={{marginBottom:".5rem"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:".5rem",flexWrap:"wrap",marginBottom:".2rem"}}>
+                            <span style={{background:"rgba(248,113,113,.12)",borderRadius:6,padding:".1rem .5rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",fontSize:".88rem",textDecoration:"line-through"}}>{e.original}</span>
+                            <span style={{color:"#5a4a6a"}}>→</span>
+                            <span style={{background:"rgba(74,222,128,.12)",borderRadius:6,padding:".1rem .5rem",color:"#86efac",fontFamily:"'Crimson Pro',serif",fontWeight:700,fontSize:".88rem"}}>{e.corrected}</span>
+                          </div>
+                          <div style={{fontSize:".78rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>💡 {e.explanation}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Useful phrases */}
+                  {rpReview.modelPhrases?.length>0&&(
+                    <div className="ielts-criterion" style={{borderColor:"rgba(251,191,36,.2)",marginBottom:".6rem"}}>
+                      <div style={{fontSize:".7rem",color:"#fbbf24",letterSpacing:".08em",marginBottom:".4rem"}}>💡 CỤM TỪ HỮU ÍCH CHO TÌNH HUỐNG NÀY</div>
+                      <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                        {rpReview.modelPhrases.map((ph,i)=>(
+                          <span key={i} onClick={()=>speak(ph,0.85)}
+                            style={{fontSize:".82rem",color:"#fde68a",background:"rgba(251,191,36,.1)",border:"1px solid rgba(251,191,36,.2)",borderRadius:8,padding:".2rem .7rem",fontFamily:"'Crimson Pro',serif",cursor:"pointer"}}>
+                            {ph} 🔊
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Improvements */}
+                  {rpReview.improvements?.length>0&&(
+                    <div className="ielts-criterion" style={{borderColor:"rgba(167,139,250,.2)",marginBottom:".8rem"}}>
+                      <div style={{fontSize:".7rem",color:"#a78bfa",letterSpacing:".08em",marginBottom:".4rem"}}>📈 GỢI Ý CẢI THIỆN</div>
+                      {rpReview.improvements.map((s,i)=><div key={i} style={{fontSize:".88rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif",marginBottom:".25rem"}}>• {s}</div>)}
+                    </div>
+                  )}
+
+                  <div style={{display:"flex",gap:".6rem"}}>
+                    <button className="btn" onClick={()=>{ setRpPhase("chat"); }}
+                      style={{flex:1,padding:".8rem",borderRadius:12,background:"rgba(96,165,250,.12)",border:"1.5px solid rgba(96,165,250,.3)",color:"#93c5fd",fontWeight:700}}>💬 Xem lại chat</button>
+                    <button className="btn" onClick={resetRp}
+                      style={{flex:1,padding:".8rem",borderRadius:12,background:"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700}}>🎭 Scenario mới</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+
+          // ── CHAT ──────────────────────────────────────────────────────
+          return (
+            <div>
+              {/* Header */}
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:".7rem"}}>
+                <div style={{display:"flex",alignItems:"center",gap:".6rem"}}>
+                  <span style={{fontSize:"1.5rem"}}>{rpScenario?.icon}</span>
+                  <div>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:rpScenario?.color||"#93c5fd",fontSize:".95rem"}}>{rpScenario?.title}</div>
+                    <div style={{fontSize:".68rem",color:"#5a4a6a",fontFamily:"'Crimson Pro',serif"}}>{rpScenario?.character}</div>
+                  </div>
+                </div>
+                <button className="btn" onClick={()=>setRpPhase("review")}
+                  style={{padding:".4rem .9rem",borderRadius:10,background:"rgba(248,113,113,.1)",border:"1px solid rgba(248,113,113,.2)",color:"#f87171",fontSize:".78rem",fontWeight:700}}>
+                  ⏹ Kết thúc
+                </button>
+              </div>
+
+              {/* Chat messages */}
+              <div style={{maxHeight:"55vh",overflowY:"auto",display:"flex",flexDirection:"column",padding:".5rem 0",marginBottom:".8rem"}}>
+                {rpMessages.map((m,i)=>(
+                  <div key={i} style={{display:"flex",justifyContent:m.role==="user"?"flex-end":"flex-start",marginBottom:".5rem"}}>
+                    {m.role==="ai"&&<span style={{fontSize:"1.2rem",marginRight:".4rem",alignSelf:"flex-end"}}>{rpScenario?.icon}</span>}
+                    <div className={m.role==="user"?"rp-bubble-user":"rp-bubble-ai"}>
+                      <div style={{fontSize:".92rem",fontFamily:"'Crimson Pro',serif",color:"#f0eaff",lineHeight:1.65}}>{m.text}</div>
+                      {m.role==="ai"&&(
+                        <button className="spkbtn btn" style={{marginTop:".3rem",fontSize:".6rem"}} onClick={()=>speak(m.text,0.88)}>🔊</button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+                {rpLoading&&(
+                  <div style={{display:"flex",alignItems:"center",gap:".5rem",padding:".5rem 0"}}>
+                    <span style={{fontSize:"1.2rem"}}>{rpScenario?.icon}</span>
+                    <div className="shimmer" style={{width:80,height:32,borderRadius:16}}/>
+                  </div>
+                )}
+              </div>
+
+              {/* Input */}
+              <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.1)",borderRadius:16,padding:".7rem"}}>
+                <textarea className="writing-area" rows={2}
+                  placeholder="Gõ câu trả lời... hoặc nhấn 🎤 để nói"
+                  value={rpInput} onChange={e=>setRpInput(e.target.value)}
+                  onKeyDown={async e=>{
+                    if(e.key==="Enter"&&!e.shiftKey&&!rpLoading){
+                      e.preventDefault();
+                      const txt=rpInput.trim(); if(!txt) return;
+                      const userMsg={role:"user",text:txt,ts:Date.now()};
+                      const newMsgs=[...rpMessagesRef.current,userMsg];
+                      rpMessagesRef.current=newMsgs;
+                      setRpMessages([...newMsgs]); setRpInput(""); setRpLoading(true);
+                      try {
+                        const reply=await getRoleplayReply(rpScenario,newMsgs,txt);
+                        const aiMsg={role:"ai",text:reply,ts:Date.now()};
+                        rpMessagesRef.current=[...newMsgs,aiMsg];
+                        setRpMessages([...newMsgs,aiMsg]);
+                        setRpTurn(t=>t+1);
+                        setTimeout(()=>speak(reply,0.88),100);
+                      } catch(e){ console.error(e); }
+                      finally { setRpLoading(false); }
+                    }
+                  }}
+                  style={{fontSize:".92rem",fontFamily:"'Crimson Pro',serif",lineHeight:1.6,resize:"none",background:"transparent",border:"none",outline:"none",width:"100%",color:"#f0eaff",padding:0}}
+                />
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:".4rem"}}>
+                  <div style={{display:"flex",gap:".5rem",alignItems:"center"}}>
+                    <button className={`mic-btn btn ${rpListening?"listening":"idle"}`}
+                      style={{width:36,height:36,fontSize:".85rem"}}
+                      onClick={()=>{
+                        if(rpListening){stopGoogleSTT();return;}
+                        startGoogleSTT({
+                          onStart:()=>setRpListening(true),
+                          onEnd:()=>setRpListening(false),
+                          onError:()=>setRpListening(false),
+                          onResult:async(data)=>{
+                            const txt=data.transcript?.trim(); if(!txt) return;
+                            setRpInput(txt);
+                          }
+                        });
+                      }}>
+                      {rpListening?"⏹":"🎤"}
+                    </button>
+                    {rpListening&&<span style={{fontSize:".7rem",color:"#f87171"}} className="pulse-rec">Đang nghe...</span>}
+                  </div>
+                  <button className="btn" disabled={rpLoading||!rpInput.trim()}
+                    onClick={async()=>{
+                      const txt=rpInput.trim(); if(!txt||rpLoading) return;
+                      const userMsg={role:"user",text:txt,ts:Date.now()};
+                      const newMsgs=[...rpMessagesRef.current,userMsg];
+                      rpMessagesRef.current=newMsgs;
+                      setRpMessages([...newMsgs]); setRpInput(""); setRpLoading(true);
+                      try {
+                        const reply=await getRoleplayReply(rpScenario,newMsgs,txt);
+                        const aiMsg={role:"ai",text:reply,ts:Date.now()};
+                        rpMessagesRef.current=[...newMsgs,aiMsg];
+                        setRpMessages([...newMsgs,aiMsg]);
+                        setRpTurn(t=>t+1);
+                        setTimeout(()=>speak(reply,0.88),100);
+                      } catch(e){ console.error(e); }
+                      finally { setRpLoading(false); }
+                    }}
+                    style={{padding:".45rem 1.2rem",borderRadius:10,background:rpInput.trim()&&!rpLoading?"linear-gradient(135deg,#60a5fa,#a78bfa)":"rgba(255,255,255,.06)",color:rpInput.trim()&&!rpLoading?"white":"#4a3a5a",border:"none",fontWeight:700,fontSize:".88rem",transition:"all .2s"}}>
+                    Gửi ↵
+                  </button>
+                </div>
+              </div>
+
+              <div style={{fontSize:".68rem",color:"#4a3a5a",textAlign:"center",marginTop:".4rem"}}>Enter để gửi · Shift+Enter xuống dòng · Nói xong nhấn ⏹ rồi nhấn Gửi</div>
+            </div>
+          );
+        })()}
 
         {/* ══ PARAPHRASE TRAINER ══ */}
         {mode===MODES.PARAPHRASE && (
