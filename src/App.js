@@ -122,7 +122,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", IELTS_S:"ielts_s", PARAPHRASE:"paraphrase", ROLEPLAY:"roleplay", VIC:"vic", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
+const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", IELTS_S:"ielts_s", PARAPHRASE:"paraphrase", ROLEPLAY:"roleplay", VIC:"vic", NEWS:"news", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 
@@ -1139,6 +1139,46 @@ Reply ONLY with JSON (single quotes inside strings):
 
 
 
+
+// ─── OpenAI — News Summary Quiz ──────────────────────────────────────────
+async function generateNewsArticle(topic, level) {
+  const levelDesc = {
+    B1: "simple sentences, common vocabulary, short paragraphs",
+    B2: "varied sentence structures, topic-specific vocabulary, IELTS Reading style",
+    C1: "complex grammar, academic vocabulary, sophisticated arguments",
+  }[level] || "B2";
+
+  const topicLine = topic
+    ? `Topic: ${topic}`
+    : `Topic: choose a current global issue (technology, environment, health, economy, education, or society)`;
+
+  const prompt = `Create a realistic news article for an English learner at ${level} level.
+${topicLine}
+Style: ${levelDesc}
+Length: 200-250 words, 3-4 paragraphs
+Format: like a real BBC/Reuters news article with a headline
+
+After the article, create 4 comprehension questions:
+- Q1: Main idea (multiple choice A/B/C/D)
+- Q2: Specific detail (multiple choice A/B/C/D)  
+- Q3: Inference/implication (multiple choice A/B/C/D)
+- Q4: Vocabulary in context — what does [word from article] mean? (multiple choice A/B/C/D)
+
+Also extract 5 useful vocabulary words from the article.
+
+Reply ONLY with JSON (single quotes inside strings):
+{"headline":"Article headline","category":"Technology|Health|Environment|Economy|Society|Education","level":"${level}","article":"Full article text with paragraph breaks using \\n\\n","questions":[{"type":"main idea","q":"Question text?","options":["A. option","B. option","C. option","D. option"],"answer":"B","explanation":"Why this answer is correct"},{"type":"detail","q":"...","options":["A.","B.","C.","D."],"answer":"A","explanation":"..."},{"type":"inference","q":"...","options":["A.","B.","C.","D."],"answer":"C","explanation":"..."},{"type":"vocabulary","q":"In paragraph X, the word '...' most likely means:","options":["A.","B.","C.","D."],"answer":"D","explanation":"..."}],"keyVocab":[{"word":"word","definition":"brief English definition","context":"sentence from article containing the word"}]}`;
+
+  const data = await openAIFetch({
+    system: "You are a news editor creating English learning materials. Output ONLY compact single-line JSON. Single quotes inside strings. Write engaging, realistic news content.",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 2000,
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Lỗi tạo bài"); }
+}
+
 // ─── OpenAI — Topic Vocabulary Builder ───────────────────────────────────
 async function generateTopicVocab(topic) {
   const prompt = `You are an English vocabulary teacher. Create a comprehensive vocabulary guide for the topic: "${topic}"
@@ -1357,7 +1397,15 @@ function VocabApp({ apiKey }) {
   const [vicResult,   setVicResult]   = useState(null);
   const [vicLoading,  setVicLoading]  = useState(false);
   const [vicContext,  setVicContext]  = useState("all");
-  const [vicMode,     setVicMode]     = useState("word");  // word | topic
+  const [vicMode,     setVicMode]     = useState("word");
+  // News Quiz
+  const [newsArticle,  setNewsArticle]  = useState(null);
+  const [newsAnswers,  setNewsAnswers]  = useState([]);
+  const [newsChecked,  setNewsChecked]  = useState(false);
+  const [newsLoading,  setNewsLoading]  = useState(false);
+  const [newsTopic,    setNewsTopic]    = useState("");
+  const [newsLevel,    setNewsLevel]    = useState("B2");
+  const [newsView,     setNewsView]     = useState("read"); // read | quiz
   const [vicTopic,    setVicTopic]    = useState("");
   const [vicTopicResult, setVicTopicResult] = useState(null);
   const [spkSimPhase,   setSpkSimPhase]   = useState("menu"); // menu|p1|p2|p3|review
@@ -1790,6 +1838,8 @@ function VocabApp({ apiKey }) {
     .reading-opt.ok{background:rgba(74,222,128,.15);border-color:#4ade80!important;color:#4ade80;}
     .reading-opt.no{background:rgba(248,113,113,.15);border-color:#f87171!important;color:#f87171;}
     .journal-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .news-body{font-family:"Crimson Pro",serif;font-size:1rem;line-height:1.85;color:#d4c8f0;}
+    .news-body p{margin-bottom:.8rem;}
     .vic-example{background:rgba(255,255,255,.03);border-left:3px solid;border-radius:0 12px 12px 0;padding:.7rem 1rem;margin-bottom:.6rem;}
     .rp-bubble-user{background:linear-gradient(135deg,rgba(167,139,250,.25),rgba(236,72,153,.15));border:1px solid rgba(167,139,250,.3);border-radius:18px 18px 4px 18px;padding:.75rem 1rem;margin-bottom:.6rem;align-self:flex-end;max-width:85%;}
     .rp-bubble-ai{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);border-radius:18px 18px 18px 4px;padding:.75rem 1rem;margin-bottom:.6rem;align-self:flex-start;max-width:85%;}
@@ -1848,6 +1898,7 @@ function VocabApp({ apiKey }) {
     [MODES.PARAPHRASE]:"✍️ Paraphrase",
     [MODES.ROLEPLAY]:"🎭 Roleplay",
     [MODES.VIC]:"🔤 Vocab in Context",
+    [MODES.NEWS]:"🗞 News Quiz",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
   };
@@ -5508,6 +5559,215 @@ function VocabApp({ apiKey }) {
 
 
 
+
+
+        {/* ══ NEWS QUIZ ══ */}
+        {mode===MODES.NEWS && (
+          <div>
+            {/* Header */}
+            <div style={{background:"linear-gradient(145deg,rgba(96,165,250,.07),rgba(251,191,36,.05))",border:"1px solid rgba(96,165,250,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#93c5fd",marginBottom:".25rem"}}>🗞 News Summary Quiz</div>
+              <div style={{fontSize:".83rem",color:"#7a8a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+                AI tạo bài báo tiếng Anh theo chủ đề bạn chọn → đọc → trả lời câu hỏi comprehension theo chuẩn IELTS Reading.
+              </div>
+            </div>
+
+            {!newsArticle ? (
+              <div>
+                {/* Level */}
+                <div style={{marginBottom:".8rem"}}>
+                  <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".35rem",letterSpacing:".05em"}}>Cấp độ</div>
+                  <div style={{display:"flex",gap:".4rem"}}>
+                    {[["B1","B1 — Intermediate","#4ade80"],["B2","B2 — Upper Int.","#60a5fa"],["C1","C1 — Advanced","#a78bfa"]].map(([val,label,col])=>(
+                      <button key={val} className="btn" onClick={()=>setNewsLevel(val)}
+                        style={{flex:1,padding:".4rem",borderRadius:10,fontSize:".8rem",fontWeight:700,
+                          border:`1.5px solid ${newsLevel===val?col+"cc":col+"44"}`,
+                          background:newsLevel===val?col+"22":"transparent",
+                          color:newsLevel===val?col:"#5a4a6a"}}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Topic */}
+                <div style={{marginBottom:".8rem"}}>
+                  <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Chủ đề (để trống = AI tự chọn)</div>
+                  <input className="fi"
+                    placeholder="e.g. artificial intelligence, climate summit, space exploration..."
+                    value={newsTopic} onChange={e=>setNewsTopic(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"&&!newsLoading)document.getElementById("news-btn")?.click();}}
+                  />
+                </div>
+
+                {/* Quick topics */}
+                <div style={{display:"flex",gap:".35rem",flexWrap:"wrap",marginBottom:"1rem"}}>
+                  {["AI & technology","climate change","global health","space exploration","education reform","economic trends","social media impact","renewable energy"].map(t=>(
+                    <button key={t} className="btn" onClick={()=>setNewsTopic(t)}
+                      style={{padding:".2rem .7rem",borderRadius:999,fontSize:".75rem",
+                        background:newsTopic===t?"rgba(96,165,250,.15)":"rgba(255,255,255,.04)",
+                        border:`1px solid ${newsTopic===t?"rgba(96,165,250,.35)":"rgba(255,255,255,.08)"}`,
+                        color:newsTopic===t?"#93c5fd":"#6a5a7a"}}>
+                      {t}
+                    </button>
+                  ))}
+                </div>
+
+                {newsLoading
+                  ? <div>{[90,70,80,60,75].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:9,width:`${w}%`}}/>)}</div>
+                  : <button id="news-btn" className="btn" onClick={async()=>{
+                      setNewsLoading(true); setNewsArticle(null); setNewsAnswers([]); setNewsChecked(false); setNewsView("read");
+                      try {
+                        const r = await generateNewsArticle(newsTopic.trim(), newsLevel);
+                        setNewsArticle(r);
+                        setNewsAnswers(Array((r.questions||[]).length).fill(""));
+                      } catch(e){ alert("Lỗi: "+e.message); }
+                      finally { setNewsLoading(false); }
+                    }}
+                    style={{width:"100%",padding:".9rem",borderRadius:14,background:"linear-gradient(135deg,#60a5fa,#fbbf24)",color:"#0a0a0a",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                    🗞 Tạo bài báo
+                  </button>
+                }
+              </div>
+            ) : (
+              <div className="fade-in">
+                {/* Article header */}
+                <div style={{marginBottom:".8rem"}}>
+                  <div style={{display:"flex",gap:".5rem",alignItems:"center",marginBottom:".5rem",flexWrap:"wrap"}}>
+                    {newsArticle.category&&<span style={{fontSize:".65rem",fontWeight:700,color:"#fbbf24",background:"rgba(251,191,36,.12)",borderRadius:6,padding:"2px 9px",textTransform:"uppercase",letterSpacing:".06em"}}>{newsArticle.category}</span>}
+                    <span style={{fontSize:".65rem",color:"#a78bfa",background:"rgba(167,139,250,.1)",borderRadius:6,padding:"2px 9px"}}>{newsArticle.level}</span>
+                  </div>
+                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,fontSize:"1.25rem",color:"#f0eaff",lineHeight:1.4,marginBottom:".7rem"}}>{newsArticle.headline}</div>
+
+                  {/* Tab switcher */}
+                  <div style={{display:"flex",gap:".4rem",marginBottom:"1rem"}}>
+                    {[["read","📰 Article"],["quiz","❓ Quiz ("+( newsArticle.questions||[]).length+")"]].map(([v,l])=>(
+                      <button key={v} className="btn" onClick={()=>setNewsView(v)}
+                        style={{flex:1,padding:".45rem",borderRadius:10,fontSize:".85rem",fontWeight:700,
+                          background:newsView===v?"rgba(96,165,250,.18)":"rgba(255,255,255,.04)",
+                          border:`1.5px solid ${newsView===v?"rgba(96,165,250,.35)":"rgba(255,255,255,.08)"}`,
+                          color:newsView===v?"#93c5fd":"#6a5a7a"}}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Article view */}
+                {newsView==="read" && (
+                  <div>
+                    <div className="news-body">
+                      {(newsArticle.article||"").split("\n\n").map((p,i)=>(
+                        <p key={i}>{p}</p>
+                      ))}
+                    </div>
+
+                    {/* Key vocab */}
+                    {newsArticle.keyVocab?.length>0&&(
+                      <div style={{background:"rgba(251,191,36,.06)",border:"1px solid rgba(251,191,36,.15)",borderRadius:14,padding:".9rem 1rem",marginTop:"1rem"}}>
+                        <div style={{fontSize:".7rem",color:"#fbbf24",letterSpacing:".08em",marginBottom:".5rem"}}>📖 KEY VOCABULARY</div>
+                        {newsArticle.keyVocab.map((v,i)=>(
+                          <div key={i} style={{marginBottom:".5rem"}}>
+                            <div style={{display:"flex",alignItems:"center",gap:".5rem",marginBottom:".15rem"}}>
+                              <span style={{fontFamily:"'Crimson Pro',serif",fontWeight:700,color:"#fde68a",fontSize:".95rem"}}>{v.word}</span>
+                              <span style={{fontSize:".8rem",color:"#7a6a8a"}}>— {v.definition}</span>
+                              <button className="spkbtn btn" style={{fontSize:".6rem"}} onClick={()=>speak(v.word,0.78)}>🔊</button>
+                              <button className="btn" onClick={()=>{
+                                const newW={word:v.word,type:"",meaning:v.definition||"",level:newsArticle.level||"B2",example:v.context||""};
+                                if(allWords.some(x=>x.word.toLowerCase()===newW.word.toLowerCase())){alert(`"${v.word}" đã có rồi!`);return;}
+                                setAllWords(prev=>[...prev,newW]);
+                                alert(`✅ Đã lưu "${v.word}"!`);
+                              }} style={{padding:"1px 7px",borderRadius:6,background:"rgba(74,222,128,.1)",border:"1px solid rgba(74,222,128,.2)",color:"#4ade80",fontSize:".68rem",fontWeight:700}}>💾</button>
+                            </div>
+                            {v.context&&<div style={{fontSize:".78rem",color:"#6a5a7a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",paddingLeft:".5rem"}}>"{v.context}"</div>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    <button className="btn" onClick={()=>setNewsView("quiz")}
+                      style={{width:"100%",padding:".85rem",borderRadius:14,background:"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700,marginTop:"1rem"}}>
+                      ❓ Làm bài kiểm tra →
+                    </button>
+                  </div>
+                )}
+
+                {/* Quiz view */}
+                {newsView==="quiz" && (
+                  <div>
+                    {(newsArticle.questions||[]).map((q,qi)=>{
+                      const userAns = newsAnswers[qi]||"";
+                      const isOk = newsChecked && userAns===q.answer;
+                      const isNo = newsChecked && userAns && userAns!==q.answer;
+                      return(
+                        <div key={qi} style={{background:"rgba(255,255,255,.025)",border:`1px solid ${newsChecked?(isOk?"rgba(74,222,128,.25)":"rgba(248,113,113,.18)"):"rgba(255,255,255,.06)"}`,borderRadius:14,padding:"1rem",marginBottom:".8rem"}}>
+                          {q.type&&<div style={{fontSize:".62rem",color:"#fbbf24",background:"rgba(251,191,36,.1)",borderRadius:6,padding:"1px 8px",display:"inline-block",marginBottom:".4rem",textTransform:"uppercase",letterSpacing:".04em"}}>{q.type}</div>}
+                          <div style={{fontSize:".92rem",fontFamily:"'Crimson Pro',serif",fontWeight:600,color:"#f0eaff",marginBottom:".6rem",lineHeight:1.5}}>{qi+1}. {q.q}</div>
+                          {(q.options||[]).map((opt,oi)=>{
+                            const letter=opt[0];
+                            const isSel=userAns===letter;
+                            const isCorrect=newsChecked&&letter===q.answer;
+                            const isWrong=newsChecked&&isSel&&!isCorrect;
+                            let cls="reading-opt";
+                            if(isCorrect)cls+=" ok"; else if(isWrong)cls+=" no";
+                            return(
+                              <button key={oi} className={cls} disabled={newsChecked}
+                                onClick={()=>setNewsAnswers(p=>{const a=[...p];a[qi]=letter;return a;})}
+                                style={{background:isSel&&!newsChecked?"rgba(96,165,250,.12)":"",borderColor:isSel&&!newsChecked?"#60a5fa":""}}>
+                                {opt}
+                              </button>
+                            );
+                          })}
+                          {newsChecked&&q.explanation&&(
+                            <div style={{marginTop:".5rem",fontSize:".8rem",color:isOk?"#86efac":"#fca5a5",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>
+                              💡 {q.explanation}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {!newsChecked ? (
+                      <button className="btn" onClick={()=>setNewsChecked(true)}
+                        disabled={newsAnswers.filter(Boolean).length<(newsArticle.questions||[]).length}
+                        style={{width:"100%",padding:".85rem",borderRadius:14,
+                          background:newsAnswers.filter(Boolean).length>=(newsArticle.questions||[]).length?"linear-gradient(135deg,#60a5fa,#4ade80)":"rgba(255,255,255,.05)",
+                          color:newsAnswers.filter(Boolean).length>=(newsArticle.questions||[]).length?"white":"#4a3a5a",
+                          border:"none",fontWeight:700,fontSize:"1rem"}}>
+                        ✅ Kiểm tra đáp án
+                      </button>
+                    ) : (
+                      <div>
+                        {/* Score */}
+                        <div style={{textAlign:"center",padding:"1rem",background:"rgba(0,0,0,.3)",border:"2px solid rgba(96,165,250,.25)",borderRadius:16,marginBottom:"1rem"}}>
+                          {(()=>{
+                            const c=newsAnswers.filter((a,i)=>a===(newsArticle.questions||[])[i]?.answer).length;
+                            const t=(newsArticle.questions||[]).length;
+                            const col=c===t?"#4ade80":c>=t*.75?"#fbbf24":"#f87171";
+                            return(<>
+                              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"2rem",fontWeight:900,color:col}}>{c}/{t}</div>
+                              <div style={{fontSize:".82rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif"}}>{c===t?"Perfect! 🌟":c>=t*.75?"Good job! 👍":"Keep practicing! 📚"}</div>
+                            </>);
+                          })()}
+                        </div>
+                        <div style={{display:"flex",gap:".6rem"}}>
+                          <button className="btn" onClick={()=>{setNewsAnswers(Array((newsArticle.questions||[]).length).fill(""));setNewsChecked(false);}}
+                            style={{flex:1,padding:".75rem",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#7a6a8a",fontWeight:600}}>
+                            🔄 Làm lại
+                          </button>
+                          <button className="btn" onClick={()=>{setNewsArticle(null);setNewsAnswers([]);setNewsChecked(false);}}
+                            style={{flex:1,padding:".75rem",borderRadius:12,background:"linear-gradient(135deg,#60a5fa,#fbbf24)",color:"#0a0a0a",border:"none",fontWeight:700}}>
+                            🗞 Bài mới
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ══ VOCABULARY IN CONTEXT ══ */}
         {mode===MODES.VIC && (
