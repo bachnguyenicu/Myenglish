@@ -1111,21 +1111,22 @@ async function generateParaphrases(sentence, context, apiKey) {
     casual:   "casual, informal spoken English",
   }[context] || "everyday English";
 
-  const prompt = `Rewrite this sentence in 3 different ways for a Vietnamese English learner.
+  const prompt = `You are an English writing coach. Rewrite the following English sentence in 3 different ways IN ENGLISH ONLY.
 
-Original: "${sentence}"
+Original English sentence: "${sentence}"
 Target style: ${contextDesc}
 
-For each paraphrase:
-- Keep the same core meaning
-- Use different vocabulary, structure, or connectors
-- Label difficulty: Simple / Intermediate / Advanced
+CRITICAL RULES:
+- ALL paraphrases must be in ENGLISH — never translate to Vietnamese
+- Keep the exact same meaning as the original
+- Use different vocabulary, sentence structure, or connectors each time
+- "changes" field: explain in Vietnamese what changed (vocabulary/structure/etc.)
 
-Reply ONLY with JSON (single quotes inside strings, Vietnamese with full diacritics):
-{"paraphrases":[{"level":"Simple","text":"rewritten sentence","changes":"giải thích ngắn thay đổi chính bằng tiếng Việt có dấu"},{"level":"Intermediate","text":"...","changes":"..."},{"level":"Advanced","text":"...","changes":"..."}],"tips":"1-2 lời khuyên về văn phong bằng tiếng Việt có dấu","keyPhrases":["useful phrase 1","useful phrase 2","useful phrase 3"]}`;
+Reply ONLY with JSON (single quotes inside strings):
+{"paraphrases":[{"level":"Simple","text":"ENGLISH rewritten sentence here","changes":"giải thích ngắn bằng tiếng Việt"},{"level":"Intermediate","text":"ENGLISH rewritten sentence here","changes":"giải thích ngắn bằng tiếng Việt"},{"level":"Advanced","text":"ENGLISH rewritten sentence here","changes":"giải thích ngắn bằng tiếng Việt"}],"tips":"lời khuyên văn phong tiếng Việt","keyPhrases":["English phrase 1","English phrase 2","English phrase 3"]}`;
 
   const data = await openAIFetch({
-    system: "You are an expert English writing coach. Output ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics.",
+    system: "You are an expert English writing coach. ALL paraphrases must be in ENGLISH. Never translate to Vietnamese. Only the 'changes' and 'tips' fields should be in Vietnamese. Output ONLY compact single-line JSON.",
     messages: [{ role: "user", content: prompt }],
     max_tokens: 1000,
   });
