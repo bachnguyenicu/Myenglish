@@ -122,7 +122,7 @@ function getNextReview(card, quality) {
 function isDue(card) { return !card.nextReview || card.nextReview <= Date.now(); }
 
 const LEVELS = ["All","A1","A2","B1","B2","C1","C2"];
-const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", IELTS_S:"ielts_s", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
+const MODES = { DAILY:"daily", ERRORS:"errors", IELTS_W:"ielts_w", IELTS_S:"ielts_s", PARAPHRASE:"paraphrase", FLASHCARD:"flashcard", QUIZ:"quiz", SRS:"srs", FILL:"fill", LISTEN_DEF:"listen_def", DICTATION:"dictation", WRITING:"writing", SPEAKING:"speaking", CONVO:"convo", SHADOW:"shadow", READING:"reading", PODCAST:"podcast", JOURNAL:"journal", GRAMMAR:"grammar", REVIEW:"review", ADD:"add" };
 const LC = { A1:"#4ade80", A2:"#86efac", B1:"#60a5fa", B2:"#818cf8", C1:"#f472b6", C2:"#fb923c" };
 function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 
@@ -253,7 +253,7 @@ async function openAIFetch(body, maxRetries = 3) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: "gpt-5-mini",
+          model: "gpt-4o-mini",
           system: body.system || "",
           messages: body.messages || [],
           max_tokens: body.max_tokens || 1000,
@@ -1101,6 +1101,39 @@ Reply ONLY with JSON (use single quotes inside strings):
 }
 
 
+
+// ─── OpenAI — Paraphrase Trainer ─────────────────────────────────────────
+async function generateParaphrases(sentence, context, apiKey) {
+  const contextDesc = {
+    general:  "everyday conversational English",
+    academic: "academic/IELTS writing style (formal, complex vocabulary)",
+    business: "professional business communication",
+    casual:   "casual, informal spoken English",
+  }[context] || "everyday English";
+
+  const prompt = `Rewrite this sentence in 3 different ways for a Vietnamese English learner.
+
+Original: "${sentence}"
+Target style: ${contextDesc}
+
+For each paraphrase:
+- Keep the same core meaning
+- Use different vocabulary, structure, or connectors
+- Label difficulty: Simple / Intermediate / Advanced
+
+Reply ONLY with JSON (single quotes inside strings, Vietnamese with full diacritics):
+{"paraphrases":[{"level":"Simple","text":"rewritten sentence","changes":"giải thích ngắn thay đổi chính bằng tiếng Việt có dấu"},{"level":"Intermediate","text":"...","changes":"..."},{"level":"Advanced","text":"...","changes":"..."}],"tips":"1-2 lời khuyên về văn phong bằng tiếng Việt có dấu","keyPhrases":["useful phrase 1","useful phrase 2","useful phrase 3"]}`;
+
+  const data = await openAIFetch({
+    system: "You are an expert English writing coach. Output ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics.",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 1000,
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Lỗi đọc kết quả"); }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
 function VocabApp({ apiKey }) {
   const [allWords, setAllWords] = useState(() => loadState("lx_words", BUILT_IN));
@@ -1168,6 +1201,11 @@ function VocabApp({ apiKey }) {
   const [ieltsTaskType, setIeltsTaskType] = useState("random");
   // IELTS Speaking — per-part independent flow
   const [spkSimTopic,   setSpkSimTopic]   = useState("");
+  // Paraphrase Trainer
+  const [ppInput,     setPpInput]     = useState("");
+  const [ppResult,    setPpResult]    = useState(null);
+  const [ppLoading,   setPpLoading]   = useState(false);
+  const [ppContext,   setPpContext]   = useState("general"); // general|academic|business|casual
   const [spkSimPhase,   setSpkSimPhase]   = useState("menu"); // menu|p1|p2|p3|review
   const [spkSimPartNum, setSpkSimPartNum] = useState(0);
   const [spkSimQs,      setSpkSimQs]      = useState([]);   // questions for current part
@@ -1598,6 +1636,9 @@ function VocabApp({ apiKey }) {
     .reading-opt.ok{background:rgba(74,222,128,.15);border-color:#4ade80!important;color:#4ade80;}
     .reading-opt.no{background:rgba(248,113,113,.15);border-color:#f87171!important;color:#f87171;}
     .journal-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:.9rem 1rem;margin-bottom:.7rem;}
+    .pp-card{background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:1rem 1.1rem;margin-bottom:.7rem;transition:border-color .2s;}
+    .pp-card:hover{border-color:rgba(167,139,250,.25);}
+    .pp-level{font-size:.62rem;font-weight:700;letter-spacing:.06em;border-radius:999px;padding:2px 10px;display:inline-block;margin-bottom:.4rem;}
     .sim-part-badge{display:inline-flex;align-items:center;gap:.4rem;padding:.25rem .8rem;border-radius:999px;font-size:.75rem;font-weight:700;}
     .rec-timer{font-family:'Playfair Display',serif;font-size:2rem;font-weight:900;color:#f87171;}
     .cue-card{background:linear-gradient(145deg,#fffbeb,#fef3c7);border-radius:16px;padding:1.2rem 1.4rem;color:#1a0a00;}
@@ -1647,6 +1688,7 @@ function VocabApp({ apiKey }) {
     [MODES.GRAMMAR]: savedLessons.length > 0 ? `📒 Grammar (${savedLessons.length})` : "📒 Grammar",
     [MODES.IELTS_W]:"🖊 IELTS Writing",
     [MODES.IELTS_S]:"🎙 IELTS Speaking",
+    [MODES.PARAPHRASE]:"✍️ Paraphrase",
     [MODES.REVIEW]:"📖 Ôn tập",
     [MODES.ADD]:"✨ Thêm từ",
   };
@@ -5304,6 +5346,148 @@ function VocabApp({ apiKey }) {
           </div>
         )}
 
+
+
+        {/* ══ PARAPHRASE TRAINER ══ */}
+        {mode===MODES.PARAPHRASE && (
+          <div>
+            {/* Header */}
+            <div style={{background:"linear-gradient(145deg,rgba(167,139,250,.07),rgba(236,72,153,.05))",border:"1px solid rgba(167,139,250,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
+              <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#c4b5fd",marginBottom:".25rem"}}>✍️ Paraphrase Trainer</div>
+              <div style={{fontSize:".83rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+                Nhập câu tiếng Anh → AI viết lại theo 3 cách khác nhau (Simple / Intermediate / Advanced). Luyện văn phong và mở rộng cách diễn đạt cho IELTS.
+              </div>
+            </div>
+
+            {/* Context selector */}
+            <div style={{marginBottom:".8rem"}}>
+              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".35rem",letterSpacing:".05em"}}>Phong cách mục tiêu</div>
+              <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                {[
+                  ["general","💬 General","#a78bfa"],
+                  ["academic","🎓 Academic","#60a5fa"],
+                  ["business","💼 Business","#4ade80"],
+                  ["casual","😊 Casual","#fbbf24"],
+                ].map(([val,label,col])=>(
+                  <button key={val} className="btn" onClick={()=>setPpContext(val)}
+                    style={{padding:".3rem .85rem",borderRadius:999,fontSize:".82rem",fontWeight:700,
+                      border:`1.5px solid ${ppContext===val?col+"cc":col+"44"}`,
+                      background:ppContext===val?col+"22":"transparent",
+                      color:ppContext===val?col:"#5a4a6a"}}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Input */}
+            <div style={{marginBottom:".8rem"}}>
+              <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Nhập câu muốn paraphrase</div>
+              <textarea className="writing-area" rows={3}
+                placeholder="vd: The weather was very bad so we decided to stay at home."
+                value={ppInput} onChange={e=>setPpInput(e.target.value)}
+                style={{fontSize:".95rem",fontFamily:"'Crimson Pro',serif",lineHeight:1.6,resize:"none"}}
+                onKeyDown={e=>{if(e.key==="Enter"&&e.metaKey&&!ppLoading)document.getElementById("pp-btn")?.click();}}
+              />
+              <div style={{fontSize:".68rem",color:"#4a3a5a",textAlign:"right",marginTop:".2rem"}}>
+                {ppInput.trim().split(/\s+/).filter(Boolean).length} từ · ⌘+Enter để gửi
+              </div>
+            </div>
+
+            {ppLoading ? (
+              <div>{[85,65,75,55,70,50].map((w,i)=><div key={i} className="shimmer" style={{height:13,borderRadius:7,marginBottom:9,width:`${w}%`}}/>)}</div>
+            ) : (
+              <button id="pp-btn" className="btn" onClick={async()=>{
+                const txt = ppInput.trim();
+                if(!txt||txt.split(/\s+/).length<2) { alert("Nhập ít nhất 1 câu hoàn chỉnh!"); return; }
+                setPpLoading(true); setPpResult(null);
+                try {
+                  const r = await generateParaphrases(txt, ppContext, apiKey);
+                  setPpResult(r);
+                } catch(e){ alert("Lỗi: "+e.message); }
+                finally { setPpLoading(false); }
+              }} style={{width:"100%",padding:".9rem",borderRadius:14,
+                background:"linear-gradient(135deg,#a78bfa,#ec4899)",
+                color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
+                ✨ Paraphrase
+              </button>
+            )}
+
+            {/* Results */}
+            {ppResult && (
+              <div className="fade-in" style={{marginTop:"1.2rem"}}>
+                {/* Original */}
+                <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.07)",borderRadius:12,padding:".75rem 1rem",marginBottom:"1rem"}}>
+                  <div style={{fontSize:".65rem",color:"#6a5a7a",letterSpacing:".08em",marginBottom:".3rem"}}>📝 CÂU GỐC</div>
+                  <div style={{fontSize:".95rem",fontFamily:"'Crimson Pro',serif",color:"#9a8ab0",lineHeight:1.6}}>{ppInput.trim()}</div>
+                </div>
+
+                {/* 3 paraphrases */}
+                <div style={{fontSize:".7rem",color:"#6a5a7a",letterSpacing:".08em",marginBottom:".6rem"}}>✨ 3 CÁCH DIỄN ĐẠT KHÁC</div>
+                {(ppResult.paraphrases||[]).map((p,i)=>{
+                  const levelColor = p.level==="Simple"?"#4ade80":p.level==="Intermediate"?"#fbbf24":"#c4b5fd";
+                  return (
+                    <div key={i} className="pp-card">
+                      <div className="pp-level" style={{background:levelColor+"18",color:levelColor,border:`1px solid ${levelColor}44`}}>
+                        {p.level==="Simple"?"🟢 Simple":p.level==="Intermediate"?"🟡 Intermediate":"🟣 Advanced"}
+                      </div>
+                      <div style={{display:"flex",alignItems:"flex-start",gap:".6rem",marginBottom:".4rem"}}>
+                        <div style={{flex:1,fontSize:"1rem",fontFamily:"'Crimson Pro',serif",color:"#f0eaff",lineHeight:1.7,fontWeight:600}}>
+                          {p.text}
+                        </div>
+                        <button className="spkbtn btn" onClick={()=>speak(p.text,0.85)}>🔊</button>
+                      </div>
+                      {p.changes && (
+                        <div style={{fontSize:".8rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>
+                          💡 {p.changes}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Key phrases */}
+                {ppResult.keyPhrases?.length>0 && (
+                  <div style={{background:"rgba(96,165,250,.06)",border:"1px solid rgba(96,165,250,.15)",borderRadius:14,padding:".9rem 1rem",marginBottom:".8rem"}}>
+                    <div style={{fontSize:".65rem",color:"#60a5fa",letterSpacing:".08em",marginBottom:".5rem"}}>🔑 CỤM TỪ HAY NÊN HỌC</div>
+                    <div style={{display:"flex",gap:".4rem",flexWrap:"wrap"}}>
+                      {ppResult.keyPhrases.map((ph,i)=>(
+                        <span key={i} onClick={()=>speak(ph,0.8)}
+                          style={{fontSize:".85rem",color:"#93c5fd",background:"rgba(96,165,250,.1)",border:"1px solid rgba(96,165,250,.2)",borderRadius:8,padding:".2rem .75rem",fontFamily:"'Crimson Pro',serif",cursor:"pointer"}}>
+                          {ph} 🔊
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Tips */}
+                {ppResult.tips && (
+                  <div style={{background:"rgba(167,139,250,.06)",border:"1px solid rgba(167,139,250,.15)",borderRadius:14,padding:".9rem 1rem",marginBottom:"1rem"}}>
+                    <div style={{fontSize:".65rem",color:"#a78bfa",letterSpacing:".08em",marginBottom:".35rem"}}>💬 LỜI KHUYÊN VĂN PHONG</div>
+                    <div style={{fontSize:".88rem",color:"#c4b5fd",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>{ppResult.tips}</div>
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div style={{display:"flex",gap:".6rem"}}>
+                  <button className="btn" onClick={()=>setPpResult(null)}
+                    style={{flex:1,padding:".75rem",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#7a6a8a",fontWeight:600}}>
+                    ✏️ Câu mới
+                  </button>
+                  <button className="btn" onClick={async()=>{
+                    setPpLoading(true); setPpResult(null);
+                    try { const r = await generateParaphrases(ppInput.trim(), ppContext, apiKey); setPpResult(r); }
+                    catch(e){ alert("Lỗi: "+e.message); }
+                    finally { setPpLoading(false); }
+                  }} style={{flex:1,padding:".75rem",borderRadius:12,background:"linear-gradient(135deg,#a78bfa,#ec4899)",color:"white",border:"none",fontWeight:700}}>
+                    🔄 Thử lại
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* ══ IELTS SPEAKING SIMULATOR ══ */}
         {mode===MODES.IELTS_S && (()=>{
