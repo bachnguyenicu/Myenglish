@@ -5611,7 +5611,6 @@ function VocabApp({ apiKey }) {
                     <div style={{textAlign:"center",padding:"2rem",color:"#5a4a6a",fontFamily:"'Crimson Pro',serif"}}>Viết bài xong → nhấn "Chấm bài" để xem kết quả</div>
                   )}
                 </div>
-              </div>
               );
             })()}
 
@@ -5877,13 +5876,12 @@ function VocabApp({ apiKey }) {
                     ))}
                   </div>
                 )}
-              </div>
-            )}
-            </div>
           </div>
-          )}
           </div>
-        </div>
+          </div>
+          </div>
+          </div>
+          </div>
         )}
 
 
