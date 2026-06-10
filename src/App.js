@@ -5506,11 +5506,7 @@ function VocabApp({ apiKey }) {
                         </span>
                       </div>
                       <textarea className="writing-area" rows={10}
-                        placeholder={"The chart illustrates...
-
-Overall, it is evident that...
-
-In detail, ..."}
+                        placeholder={"The chart illustrates...\n\nOverall, it is evident that...\n\nIn detail, ..."}
                         value={ieltsTask1Essay} onChange={e=>setIeltsTask1Essay(e.target.value)}
                         style={{fontSize:".92rem",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,resize:"none"}}
                       />
