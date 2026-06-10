@@ -5843,9 +5843,7 @@ function VocabApp({ apiKey }) {
                       </button>
                     </div>
                   </div>
-                  </div>
                 )}
-              </div>
               </div>
             )}
 
@@ -5878,7 +5876,6 @@ function VocabApp({ apiKey }) {
                     ))}
                   </div>
                 )}
-              </div>
               </div>
             )}
           </div>
