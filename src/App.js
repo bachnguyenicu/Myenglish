@@ -922,6 +922,61 @@ Rules:
 
 
 // ─── Claude API — Generate IELTS Task 2 Prompt ───────────────────────────
+
+// ─── OpenAI — Generate IELTS Task 1 chart data ───────────────────────────
+async function generateTask1(chartType) {
+  const chosen = chartType === "random"
+    ? ["line","bar","pie","table","process"][Math.floor(Math.random()*5)]
+    : chartType;
+
+  const prompt = `Create an IELTS Academic Writing Task 1 question with realistic data.
+Chart type: ${chosen}
+
+Rules:
+- Data must be realistic (real-world statistics feel)
+- For line/bar/pie/table: provide actual numbers
+- For process: describe 6-8 steps
+
+Reply ONLY with JSON (single quotes inside strings):
+{"chartType":"${chosen}","title":"Chart/diagram title","question":"The ${chosen} ${chosen==="process"?"diagram below shows":"below shows"} [description]. Summarise the information by selecting and reporting the main features, and make comparisons where relevant.","data":${chosen==="line"?`{"labels":["2000","2005","2010","2015","2020"],"datasets":[{"label":"Series A","values":[30,45,52,61,78]},{"label":"Series B","values":[55,48,60,71,65]}],"yLabel":"percentage (%)"}`:chosen==="bar"?`{"labels":["Category A","Category B","Category C","Category D","Category E"],"datasets":[{"label":"Group 1","values":[45,30,62,48,71]},{"label":"Group 2","values":[38,55,41,66,29]}],"yLabel":"value"}`:chosen==="pie"?`{"labels":["Sector A","Sector B","Sector C","Sector D","Sector E"],"values":[35,25,20,12,8],"unit":"%"}`:chosen==="table"?`{"headers":["Category","2000","2010","2020"],"rows":[["Item A","120","185","240"],["Item B","95","142","198"],["Item C","210","178","225"],["Item D","88","134","167"]]}`:{"steps":["Step 1: description","Step 2: description","Step 3: description","Step 4: description","Step 5: description","Step 6: description"]}},"sampleAnswer":"A full band 7-8 sample answer of 170-190 words describing the ${chosen} accurately with good academic language, overview paragraph, and specific data references.","keyPhrases":["rose significantly to","declined sharply from","remained relatively stable","accounted for the largest share","compared to"]}`;
+
+  const data = await openAIFetch({
+    system: "You are an IELTS examiner creating test materials. Output ONLY compact single-line JSON. Single quotes inside strings.",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 1500,
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch { const m=raw.match(/\{[\s\S]*\}/); if(m) return JSON.parse(m[0]); throw new Error("Lỗi tạo đề"); }
+}
+
+// ─── Claude — Grade IELTS Task 1 Essay ───────────────────────────────────
+async function gradeTask1Essay(chartData, essay, apiKey) {
+  const wc = essay.trim().split(/\s+/).filter(Boolean).length;
+  const prompt = `You are a strict IELTS examiner. Grade this Task 1 Academic Writing response.
+
+Chart type: ${chartData.chartType}
+Chart title: ${chartData.title}
+Data: ${JSON.stringify(chartData.data)}
+
+RESPONSE (${wc} words):
+${essay}
+
+Grade strictly on IELTS Task 1 band descriptors (minimum 150 words required).
+
+Reply ONLY compact single-line JSON (single quotes in strings, Vietnamese for comments):
+{"overallBand":6.5,"wordCount":${wc},"criteria":{"taskAchievement":{"band":6.5,"comment":"phản hồi tiếng Việt về việc mô tả đúng xu hướng chính"},"coherenceCohesion":{"band":6.0,"comment":"phản hồi tiếng Việt"},"lexicalResource":{"band":6.5,"comment":"phản hồi tiếng Việt"},"grammaticalRange":{"band":6.0,"comment":"phản hồi tiếng Việt"}},"strengths":["điểm mạnh 1","điểm mạnh 2"],"improvements":["cải thiện cụ thể 1","cải thiện cụ thể 2","cải thiện cụ thể 3"],"missedFeatures":["xu hướng/số liệu quan trọng bị bỏ sót 1","bị bỏ sót 2"],"keyVocab":["academic word 1","academic word 2","academic word 3"]}`;
+
+  const data = await anthropicFetch(apiKey, {
+    model:"claude-haiku-4-5-20251001", max_tokens:1200,
+    system:"Strict IELTS examiner. ONLY compact single-line JSON. Single quotes in strings. Vietnamese for comment fields.",
+    messages:[{role:"user",content:prompt}]
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  try { return repairAndParseJSON(raw); }
+  catch(e) { throw new Error("Lỗi chấm bài: "+e.message); }
+}
+
 async function generateIeltsPrompt(taskType, apiKey) { // Uses OpenAI GPT-5 mini
   const types = {
     "opinion":    "Opinion/Agree or Disagree — 'To what extent do you agree or disagree?'",
@@ -1372,6 +1427,13 @@ function VocabApp({ apiKey }) {
   const [ieltsHistory, setIeltsHistory] = useState(() => loadState("lx_ielts_w", []));
   const [ieltsView, setIeltsView] = useState("write"); // write | history
   const [ieltsTaskType, setIeltsTaskType] = useState("random");
+  // Task 1 specific
+  const [ieltsTask1Data,   setIeltsTask1Data]   = useState(null);   // chart data + prompt
+  const [ieltsTask1Essay,  setIeltsTask1Essay]  = useState("");
+  const [ieltsTask1Result, setIeltsTask1Result] = useState(null);
+  const [ieltsTask1Loading,setIeltsTask1Loading]= useState(false);
+  const [ieltsTask1View,   setIeltsTask1View]   = useState("write"); // write|result
+  const [ieltsActiveTask,  setIeltsActiveTask]  = useState("task2"); // task1|task2
   // IELTS Speaking — per-part independent flow
   const [spkSimTopic,   setSpkSimTopic]   = useState("");
   // Paraphrase Trainer
@@ -5292,6 +5354,273 @@ function VocabApp({ apiKey }) {
         {/* ══ IELTS WRITING TASK 2 ══ */}
         {mode===MODES.IELTS_W && (
           <div>
+            {/* Task 1 / Task 2 switcher */}
+            <div style={{display:"flex",gap:".5rem",marginBottom:"1rem"}}>
+              {[["task1","📊 Task 1 (Charts)"],["task2","✍️ Task 2 (Essay)"]].map(([v,l])=>(
+                <button key={v} className="btn" onClick={()=>{setIeltsActiveTask(v);setIeltsTask1Data(null);setIeltsTask1Result(null);setIeltsTask1Essay("");}}
+                  style={{flex:1,padding:".5rem",borderRadius:10,fontSize:".88rem",fontWeight:700,
+                    background:ieltsActiveTask===v?"rgba(167,139,250,.18)":"rgba(255,255,255,.04)",
+                    border:`1.5px solid ${ieltsActiveTask===v?"rgba(167,139,250,.35)":"rgba(255,255,255,.08)"}`,
+                    color:ieltsActiveTask===v?"#c4b5fd":"#6a5a7a"}}>
+                  {l}
+                </button>
+              ))}
+            </div>
+
+            {/* ══ TASK 1 ══ */}
+            {ieltsActiveTask==="task1" && (()=>{
+              const CHART_COLORS=["#60a5fa","#4ade80","#fbbf24","#f87171","#a78bfa","#f97316"];
+              const renderChart = (d) => {
+                if(!d) return null;
+                if(d.chartType==="line"||d.chartType==="bar"){
+                  const isLine=d.chartType==="line";
+                  const allVals=(d.data.datasets||[]).flatMap(ds=>ds.values||[]);
+                  const maxVal=Math.max(...allVals,1);
+                  const W=320,H=180,pL=40,pB=30,pT=15,pR=15;
+                  const gW=W-pL-pR,gH=H-pT-pB;
+                  const labels=d.data.labels||[];
+                  const xStep=gW/Math.max(labels.length-1,1);
+                  return(
+                    <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",maxWidth:400,display:"block",margin:"0 auto"}}>
+                      {[0,0.25,0.5,0.75,1].map(f=>{
+                        const y=pT+gH*(1-f);
+                        return <g key={f}><line x1={pL} y1={y} x2={W-pR} y2={y} stroke="rgba(255,255,255,.07)" strokeWidth="1"/><text x={pL-4} y={y+3} fill="#4a3a5a" fontSize="8" textAnchor="end">{Math.round(maxVal*f)}</text></g>;
+                      })}
+                      {labels.map((lb,i)=><text key={i} x={isLine?pL+i*xStep:pL+gW/labels.length*(i+0.5)} y={H-6} fill="#5a4a6a" fontSize="8" textAnchor="middle">{lb}</text>)}
+                      {(d.data.datasets||[]).map((ds,di)=>{
+                        const col=CHART_COLORS[di%CHART_COLORS.length];
+                        if(isLine){
+                          const pts=(ds.values||[]).map((v,i)=>`${pL+i*xStep},${pT+gH*(1-v/maxVal)}`).join(" ");
+                          return <g key={di}><polyline points={pts} fill="none" stroke={col} strokeWidth="2" strokeLinejoin="round"/>{(ds.values||[]).map((v,i)=><circle key={i} cx={pL+i*xStep} cy={pT+gH*(1-v/maxVal)} r="3" fill={col}/>)}<text x={W-pR} y={pT+gH*(1-(ds.values[ds.values.length-1]||0)/maxVal)-4} fill={col} fontSize="8" textAnchor="end">{ds.label}</text></g>;
+                        } else {
+                          const bGroup=gW/labels.length;
+                          const bW=bGroup/(d.data.datasets.length+.5)/d.data.datasets.length;
+                          return <g key={di}>{(ds.values||[]).map((v,i)=>{const bx=pL+i*bGroup+di*(bW+2)+4;const bh=Math.max(gH*v/maxVal,1);return <rect key={i} x={bx} y={pT+gH-bh} width={bW} height={bh} fill={col} rx="2" opacity=".85"/>;})}
+                          <rect x={W-pR-55} y={pT+di*13} width={8} height={8} fill={col} rx="1"/><text x={W-pR-44} y={pT+di*13+7} fill={col} fontSize="8">{ds.label}</text></g>;
+                        }
+                      })}
+                    </svg>
+                  );
+                }
+                if(d.chartType==="pie"){
+                  const vals=d.data.values||[],total=vals.reduce((a,b)=>a+b,0);
+                  let angle=-Math.PI/2;
+                  return(
+                    <svg viewBox="0 0 260 180" style={{width:"100%",maxWidth:300,display:"block",margin:"0 auto"}}>
+                      {vals.map((v,i)=>{
+                        const sw=2*Math.PI*v/total,x1=90+80*Math.cos(angle),y1=90+80*Math.sin(angle);
+                        angle+=sw;
+                        const x2=90+80*Math.cos(angle),y2=90+80*Math.sin(angle);
+                        const mx=90+55*Math.cos(angle-sw/2),my=90+55*Math.sin(angle-sw/2);
+                        return <g key={i}><path d={`M90,90 L${x1},${y1} A80,80 0 ${sw>Math.PI?1:0},1 ${x2},${y2} Z`} fill={CHART_COLORS[i%CHART_COLORS.length]} opacity=".85"/><text x={mx} y={my+3} fill="white" fontSize="9" textAnchor="middle" fontWeight="700">{v}%</text></g>;
+                      })}
+                      {(d.data.labels||[]).map((lb,i)=><g key={i}><rect x={185} y={20+i*18} width={9} height={9} fill={CHART_COLORS[i%CHART_COLORS.length]} rx="1"/><text x={197} y={28+i*18} fill="#9a8ab0" fontSize="9">{lb}</text></g>)}
+                    </svg>
+                  );
+                }
+                if(d.chartType==="table"){
+                  return(
+                    <div style={{overflowX:"auto",borderRadius:10,overflow:"hidden"}}>
+                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:".82rem",fontFamily:"'Crimson Pro',serif"}}>
+                        <thead><tr>{(d.data.headers||[]).map((h,i)=><th key={i} style={{padding:".4rem .6rem",background:"rgba(96,165,250,.15)",color:"#93c5fd",border:"1px solid rgba(255,255,255,.07)",textAlign:"center"}}>{h}</th>)}</tr></thead>
+                        <tbody>{(d.data.rows||[]).map((row,ri)=><tr key={ri}>{row.map((cell,ci)=><td key={ci} style={{padding:".35rem .6rem",textAlign:"center",color:ci===0?"#c4b5fd":"#d4c8f0",border:"1px solid rgba(255,255,255,.05)",background:ri%2===0?"rgba(255,255,255,.02)":"transparent"}}>{cell}</td>)}</tr>)}</tbody>
+                      </table>
+                    </div>
+                  );
+                }
+                if(d.chartType==="process"){
+                  return(
+                    <div style={{display:"flex",flexWrap:"wrap",gap:".4rem",justifyContent:"center",padding:".5rem 0"}}>
+                      {(d.data.steps||[]).map((step,i)=>(
+                        <div key={i} style={{display:"flex",alignItems:"center",gap:".3rem"}}>
+                          <div style={{background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.2)",borderRadius:10,padding:".4rem .6rem",fontSize:".75rem",color:"#c4b5fd",maxWidth:110,textAlign:"center",lineHeight:1.4}}>
+                            <span style={{fontWeight:700,color:"#a78bfa",display:"block",marginBottom:".15rem"}}>Step {i+1}</span>
+                            {step.replace(/^Step \d+:\s*/i,"")}
+                          </div>
+                          {i<(d.data.steps||[]).length-1&&<span style={{color:"#5a4a6a"}}>→</span>}
+                        </div>
+                      ))}
+                    </div>
+                  );
+                }
+                return null;
+              };
+
+              if(!ieltsTask1Data) return(
+                <div>
+                  <div style={{background:"linear-gradient(145deg,rgba(96,165,250,.07),rgba(167,139,250,.05))",border:"1px solid rgba(96,165,250,.18)",borderRadius:20,padding:"1.2rem",marginBottom:"1rem"}}>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#93c5fd",marginBottom:".25rem"}}>📊 IELTS Writing Task 1</div>
+                    <div style={{fontSize:".83rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>AI tạo biểu đồ thật → viết mô tả 150+ từ trong 20 phút → AI chấm + xem sample answer band 7-8.</div>
+                  </div>
+                  <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".5rem",letterSpacing:".05em"}}>Chọn dạng biểu đồ</div>
+                  <div style={{display:"flex",gap:".4rem",flexWrap:"wrap",marginBottom:"1rem"}}>
+                    {[["random","🎲 Random","#a78bfa"],["line","📈 Line Graph","#60a5fa"],["bar","📊 Bar Chart","#4ade80"],["pie","🥧 Pie Chart","#fbbf24"],["table","📋 Table","#f97316"],["process","⚙️ Process","#f472b6"]].map(([v,l,col])=>(
+                      <button key={v} className="btn"
+                        onClick={async()=>{
+                          setIeltsTask1Loading(true); setIeltsTask1Data(null); setIeltsTask1Result(null); setIeltsTask1Essay(""); setIeltsTask1View("write");
+                          try { const r=await generateTask1(v); setIeltsTask1Data(r); }
+                          catch(e){ alert("Lỗi: "+e.message); }
+                          finally { setIeltsTask1Loading(false); }
+                        }}
+                        disabled={ieltsTask1Loading}
+                        style={{padding:".45rem 1rem",borderRadius:12,fontSize:".85rem",fontWeight:700,
+                          background:`${col}18`,border:`1.5px solid ${col}44`,color:col,opacity:ieltsTask1Loading?.6:1}}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                  {ieltsTask1Loading&&<div>{[80,60,70].map((w,i)=><div key={i} className="shimmer" style={{height:12,borderRadius:6,marginBottom:8,width:`${w}%`}}/>)}</div>}
+                </div>
+              );
+
+              return(
+                <div>
+                  {/* Chart */}
+                  <div style={{background:"rgba(255,255,255,.03)",border:"1px solid rgba(96,165,250,.2)",borderRadius:16,padding:"1rem",marginBottom:"1rem"}}>
+                    <div style={{fontSize:".62rem",color:"#60a5fa",letterSpacing:".08em",textTransform:"uppercase",marginBottom:".3rem"}}>{ieltsTask1Data.chartType}</div>
+                    <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:"#f0eaff",fontSize:".92rem",marginBottom:".8rem",lineHeight:1.4}}>{ieltsTask1Data.title}</div>
+                    {renderChart(ieltsTask1Data)}
+                    <div style={{marginTop:".8rem",padding:".7rem",background:"rgba(0,0,0,.2)",borderRadius:10,fontSize:".82rem",color:"#9a8ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.6,fontStyle:"italic"}}>{ieltsTask1Data.question}</div>
+                  </div>
+
+                  {/* Tabs: write | sample | result */}
+                  <div style={{display:"flex",gap:".4rem",marginBottom:".8rem"}}>
+                    {[["write","✍️ Bài viết"],["sample","📝 Sample"],["result","📊 Kết quả"]].map(([v,l])=>(
+                      <button key={v} className="btn" onClick={()=>setIeltsTask1View(v)}
+                        style={{flex:1,padding:".42rem",borderRadius:9,fontSize:".78rem",fontWeight:700,
+                          background:ieltsTask1View===v?"rgba(96,165,250,.18)":"rgba(255,255,255,.04)",
+                          border:`1.5px solid ${ieltsTask1View===v?"rgba(96,165,250,.35)":"rgba(255,255,255,.08)"}`,
+                          color:ieltsTask1View===v?"#93c5fd":"#6a5a7a"}}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Write */}
+                  {ieltsTask1View==="write"&&(
+                    <div>
+                      <div style={{display:"flex",justifyContent:"space-between",marginBottom:".3rem"}}>
+                        <span style={{fontSize:".7rem",color:"#6a5a7a"}}>Mô tả biểu đồ (tối thiểu 150 từ)</span>
+                        <span style={{fontSize:".72rem",fontWeight:700,color:ieltsTask1Essay.trim().split(/\s+/).filter(Boolean).length>=150?"#4ade80":"#f87171"}}>
+                          {ieltsTask1Essay.trim().split(/\s+/).filter(Boolean).length} từ
+                        </span>
+                      </div>
+                      <textarea className="writing-area" rows={10}
+                        placeholder={"The chart illustrates...
+
+Overall, it is evident that...
+
+In detail, ..."}
+                        value={ieltsTask1Essay} onChange={e=>setIeltsTask1Essay(e.target.value)}
+                        style={{fontSize:".92rem",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,resize:"none"}}
+                      />
+                      <div style={{display:"flex",gap:".5rem",marginTop:".6rem"}}>
+                        <button className="btn" onClick={()=>{
+                          if(!ieltsTask1Essay.trim()){alert("Chưa có bài viết!");return;}
+                          const entry={id:Date.now(),date:new Date().toLocaleDateString("vi-VN"),task:"Task 1",chartType:ieltsTask1Data.chartType,title:ieltsTask1Data.title,question:ieltsTask1Data.question,essay:ieltsTask1Essay,band:ieltsTask1Result?.overallBand||null};
+                          setIeltsHistory(prev=>[entry,...prev.slice(0,49)]);
+                          alert("✅ Đã lưu bài viết!");
+                        }} style={{flex:1,padding:".65rem",borderRadius:12,background:"rgba(74,222,128,.1)",border:"1px solid rgba(74,222,128,.2)",color:"#4ade80",fontWeight:700}}>
+                          💾 Lưu bài
+                        </button>
+                        <button className="btn" disabled={ieltsTask1Loading||ieltsTask1Essay.trim().split(/\s+/).filter(Boolean).length<50}
+                          onClick={async()=>{
+                            setIeltsTask1Loading(true);
+                            try { const r=await gradeTask1Essay(ieltsTask1Data,ieltsTask1Essay,apiKey); setIeltsTask1Result(r); setIeltsTask1View("result"); }
+                            catch(e){ alert("Lỗi: "+e.message); }
+                            finally { setIeltsTask1Loading(false); }
+                          }} style={{flex:1,padding:".65rem",borderRadius:12,
+                            background:ieltsTask1Essay.trim().split(/\s+/).filter(Boolean).length>=50?"linear-gradient(135deg,#a78bfa,#60a5fa)":"rgba(255,255,255,.05)",
+                            color:ieltsTask1Essay.trim().split(/\s+/).filter(Boolean).length>=50?"white":"#4a3a5a",border:"none",fontWeight:700}}>
+                          {ieltsTask1Loading?"⏳ Đang chấm...":"📊 Chấm bài"}
+                        </button>
+                      </div>
+                      <button className="btn" onClick={()=>{setIeltsTask1Data(null);setIeltsTask1Result(null);setIeltsTask1Essay("");}}
+                        style={{width:"100%",padding:".5rem",borderRadius:10,background:"rgba(255,255,255,.03)",border:"1px solid rgba(255,255,255,.06)",color:"#4a3a5a",fontSize:".78rem",marginTop:".4rem"}}>
+                        🔄 Đề mới
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Sample Answer */}
+                  {ieltsTask1View==="sample"&&ieltsTask1Data.sampleAnswer&&(
+                    <div>
+                      <div style={{background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.2)",borderRadius:14,padding:"1rem 1.1rem",marginBottom:".8rem"}}>
+                        <div style={{fontSize:".65rem",color:"#4ade80",letterSpacing:".08em",marginBottom:".5rem"}}>📝 SAMPLE ANSWER — BAND 7-8</div>
+                        <div style={{fontSize:".92rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0",lineHeight:1.85}}>{ieltsTask1Data.sampleAnswer}</div>
+                      </div>
+                      {ieltsTask1Data.keyPhrases?.length>0&&(
+                        <div style={{background:"rgba(251,191,36,.06)",border:"1px solid rgba(251,191,36,.15)",borderRadius:14,padding:".85rem 1rem"}}>
+                          <div style={{fontSize:".65rem",color:"#fbbf24",letterSpacing:".08em",marginBottom:".4rem"}}>🔑 KEY PHRASES</div>
+                          <div style={{display:"flex",gap:".35rem",flexWrap:"wrap"}}>
+                            {ieltsTask1Data.keyPhrases.map((ph,i)=>(
+                              <span key={i} onClick={()=>speak(ph,0.82)}
+                                style={{fontSize:".82rem",color:"#fde68a",background:"rgba(251,191,36,.08)",border:"1px solid rgba(251,191,36,.15)",borderRadius:8,padding:".2rem .7rem",fontFamily:"'Crimson Pro',serif",cursor:"pointer"}}>
+                                {ph} 🔊
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Result */}
+                  {ieltsTask1View==="result"&&ieltsTask1Result&&(
+                    <div className="fade-in">
+                      <div style={{background:"rgba(0,0,0,.3)",border:"2px solid rgba(167,139,250,.3)",borderRadius:18,padding:"1rem 1.3rem",marginBottom:"1rem",display:"flex",alignItems:"center",gap:"1rem"}}>
+                        <div style={{textAlign:"center",minWidth:64}}>
+                          <div className="ielts-band" style={{fontSize:"2.5rem",lineHeight:1,color:ieltsTask1Result.overallBand>=7?"#4ade80":ieltsTask1Result.overallBand>=5.5?"#fbbf24":"#f87171"}}>{ieltsTask1Result.overallBand}</div>
+                          <div style={{fontSize:".6rem",color:"#5a4a6a"}}>Band</div>
+                        </div>
+                        <div>
+                          <div style={{fontSize:".75rem",color:"#6a5a7a"}}>{ieltsTask1Result.wordCount} words</div>
+                          {ieltsTask1Result.missedFeatures?.length>0&&(
+                            <div style={{fontSize:".78rem",color:"#f87171",fontFamily:"'Crimson Pro',serif",marginTop:".2rem"}}>⚠️ Bỏ sót: {ieltsTask1Result.missedFeatures.slice(0,2).join(" · ")}</div>
+                          )}
+                        </div>
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".5rem",marginBottom:".8rem"}}>
+                        {[["taskAchievement","📌 Task"],["coherenceCohesion","🔗 Coherence"],["lexicalResource","📚 Lexical"],["grammaticalRange","⚙️ Grammar"]].map(([k,l])=>{
+                          const c=ieltsTask1Result.criteria?.[k];if(!c)return null;
+                          const col=c.band>=7?"#4ade80":c.band>=5.5?"#fbbf24":"#f87171";
+                          return <div key={k} className="ielts-criterion"><div style={{display:"flex",justifyContent:"space-between",marginBottom:".2rem"}}><span style={{fontSize:".78rem",fontWeight:700,color:"#d4c8f0"}}>{l}</span><span style={{fontFamily:"'Playfair Display',serif",fontWeight:900,color:col,fontSize:"1.1rem"}}>{c.band}</span></div><div style={{fontSize:".75rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",lineHeight:1.5}}>{c.comment}</div></div>;
+                        })}
+                      </div>
+                      {ieltsTask1Result.improvements?.length>0&&(
+                        <div className="ielts-criterion" style={{borderColor:"rgba(248,113,113,.2)",marginBottom:".6rem"}}>
+                          <div style={{fontSize:".65rem",color:"#f87171",letterSpacing:".08em",marginBottom:".35rem"}}>📈 CẦN CẢI THIỆN</div>
+                          {ieltsTask1Result.improvements.map((s,i)=><div key={i} style={{fontSize:".85rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif",marginBottom:".2rem"}}>• {s}</div>)}
+                        </div>
+                      )}
+                      {ieltsTask1Result.keyVocab?.length>0&&(
+                        <div className="ielts-criterion" style={{borderColor:"rgba(251,191,36,.2)",marginBottom:".8rem"}}>
+                          <div style={{fontSize:".65rem",color:"#fbbf24",letterSpacing:".08em",marginBottom:".4rem"}}>🔑 TỪ VỰNG NÊN DÙNG</div>
+                          <div style={{display:"flex",gap:".35rem",flexWrap:"wrap"}}>
+                            {ieltsTask1Result.keyVocab.map((w,i)=><span key={i} onClick={()=>speak(w,0.82)} style={{fontSize:".82rem",color:"#fde68a",background:"rgba(251,191,36,.08)",border:"1px solid rgba(251,191,36,.15)",borderRadius:8,padding:".2rem .7rem",fontFamily:"'Crimson Pro',serif",cursor:"pointer"}}>{w} 🔊</span>)}
+                          </div>
+                        </div>
+                      )}
+                      <div style={{display:"flex",gap:".5rem"}}>
+                        <button className="btn" onClick={()=>{
+                          const e={id:Date.now(),date:new Date().toLocaleDateString("vi-VN"),task:"Task 1",chartType:ieltsTask1Data.chartType,title:ieltsTask1Data.title,question:ieltsTask1Data.question,essay:ieltsTask1Essay,band:ieltsTask1Result.overallBand};
+                          setIeltsHistory(prev=>[e,...prev.slice(0,49)]); alert("✅ Đã lưu!");
+                        }} style={{flex:1,padding:".7rem",borderRadius:12,background:"rgba(74,222,128,.1)",border:"1px solid rgba(74,222,128,.2)",color:"#4ade80",fontWeight:700}}>💾 Lưu bài</button>
+                        <button className="btn" onClick={()=>{setIeltsTask1Data(null);setIeltsTask1Result(null);setIeltsTask1Essay("");}}
+                          style={{flex:1,padding:".7rem",borderRadius:12,background:"linear-gradient(135deg,#60a5fa,#a78bfa)",color:"white",border:"none",fontWeight:700}}>📊 Đề mới</button>
+                      </div>
+                    </div>
+                  )}
+                  {ieltsTask1View==="result"&&!ieltsTask1Result&&(
+                    <div style={{textAlign:"center",padding:"2rem",color:"#5a4a6a",fontFamily:"'Crimson Pro',serif"}}>Viết bài xong → nhấn "Chấm bài" để xem kết quả</div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* ══ TASK 2 ══ */}
+            {ieltsActiveTask==="task2"&&(
+            <div>
             {/* Tab switcher */}
             <div style={{display:"flex",gap:".5rem",marginBottom:"1rem"}}>
               {[["write","✍️ Luyện viết"],["history","📋 Lịch sử"]].map(([v,l])=>(
@@ -6527,6 +6856,8 @@ function VocabApp({ apiKey }) {
               </div>
             )}
           </div>
+          </div>
+          )}
         )}
 
         {/* ══ IELTS SPEAKING SIMULATOR ══ */}
