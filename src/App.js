@@ -5847,6 +5847,7 @@ function VocabApp({ apiKey }) {
               </div>
               </div>
             )}
+            </div>
 
             {/* History tab */}
             {ieltsView==="history" && (
