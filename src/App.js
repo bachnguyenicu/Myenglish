@@ -5843,11 +5843,11 @@ function VocabApp({ apiKey }) {
                       </button>
                     </div>
                   </div>
+                  </div>
                 )}
               </div>
               </div>
             )}
-            </div>
 
             {/* History tab */}
             {ieltsView==="history" && (
@@ -5883,7 +5883,6 @@ function VocabApp({ apiKey }) {
             )}
           </div>
           )}
-        </div>
         </div>
         )}
 
