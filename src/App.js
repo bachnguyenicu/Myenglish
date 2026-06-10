@@ -5876,12 +5876,14 @@ function VocabApp({ apiKey }) {
                     ))}
                   </div>
                 )}
+              </div>
+              </div>
+              </div>
+              </div>
+            )}
           </div>
-          </div>
-          </div>
-          </div>
-          </div>
-          </div>
+          )}
+        </div>
         )}
 
 
