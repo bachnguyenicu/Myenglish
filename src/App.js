@@ -859,11 +859,24 @@ Important: lessons array must have 3-5 items. Do not skip lessons.`;
   if (!Array.isArray(r1.spellingErrors)) r1.spellingErrors = [];
   r1.score = r1.score || 5;
   r1.encouragement = r1.encouragement || "";
+  const journalLessons = Array.isArray(r2.lessons) ? r2.lessons.filter(l => l?.title).slice(0,5) : [];
+  const fallbackLessons = journalLessons.length ? [] : [
+    ...(Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis : []).map(s => ({
+      title: s.type === "style" ? "Cải thiện văn phong tự nhiên" : "Ôn lại lỗi " + (s.type || "grammar"),
+      explanation: s.explanation || `Bạn đã viết "${s.original}" nhưng nên sửa thành "${s.corrected}". Hãy chú ý mẫu lỗi này trong các câu sau.`,
+      example: s.corrected || s.original || "I will write this sentence more accurately next time.",
+    })),
+    ...r1.grammarErrors.map(e => ({
+      title: "Grammar: " + (e.rule || "sửa lỗi câu"),
+      explanation: e.rule || `Dạng đúng là "${e.correction || e.fix}". Hãy đọc lại câu trước khi dùng thì, mạo từ hoặc giới từ.`,
+      example: e.correction || e.fix || "This is the corrected form.",
+    })),
+  ].slice(0,3);
 
   return {
     ...r1,
     sentenceAnalysis: Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis : [],
-    lessons: Array.isArray(r2.lessons) ? r2.lessons.slice(0,5) : [],
+    lessons: journalLessons.length ? journalLessons : fallbackLessons,
   };
 }
 
