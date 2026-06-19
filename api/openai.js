@@ -8,7 +8,7 @@ export default async function handler(req, res) {
   const apiKey = process.env.OPENAI_API_KEY;
   if (!apiKey) return res.status(500).json({ error: "OpenAI API key not configured" });
 
-  const { messages, system, max_tokens = 1000 } = req.body || {};
+  const { messages, system, max_tokens = 1000, model = "gpt-4o-mini" } = req.body || {};
   if (!messages?.length) return res.status(400).json({ error: "Missing messages" });
 
   const fullMessages = system
@@ -23,7 +23,7 @@ export default async function handler(req, res) {
         "Authorization": `Bearer ${apiKey}`,
       },
       body: JSON.stringify({
-        model: "gpt-4o-mini",
+        model,
         messages: fullMessages,
         max_tokens,
         temperature: 0.7,
