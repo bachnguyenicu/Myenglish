@@ -320,24 +320,28 @@ async function speak(text, rate=0.92, voice=null) {
       body: JSON.stringify({ text: text.trim(), rate, ...(voice ? {voice} : {}) }),
     });
     if (!res.ok) throw new Error("TTS proxy error");
-    const { audio } = await res.json();
-    if (!audio) throw new Error("No audio");
-
-    // Decode base64 → ArrayBuffer → AudioContext (works on iOS)
-    const binary = atob(audio);
-    const bytes  = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-
     const ctx = getAudioCtx();
     if (ctx.state === "suspended") await ctx.resume();
 
-    const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
-    const source = ctx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(ctx.destination);
-    _ttsAudio = source;
-    source.onended = () => { _ttsAudio = null; };
-    source.start(0);
+    const payload = await res.json();
+    const audios = payload.audios?.length ? payload.audios : (payload.audio ? [payload.audio] : []);
+    if (!audios.length) throw new Error("No audio");
+
+    const playChunk = async (idx) => {
+      if (idx >= audios.length) { _ttsAudio = null; return; }
+      const binary = atob(audios[idx]);
+      const bytes  = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
+      const source = ctx.createBufferSource();
+      source.buffer = audioBuffer;
+      source.connect(ctx.destination);
+      _ttsAudio = source;
+      source.onended = () => playChunk(idx + 1);
+      source.start(0);
+    };
+
+    await playChunk(0);
 
   } catch(e) {
     // Fallback to Web Speech if Google TTS unavailable
@@ -593,7 +597,7 @@ Important: lessons MUST have 3-5 items. sentenceAnalysis must list every error f
 
 
 // ─── Claude API — Generate Dictation Sentence ─────────────────────────────
-async function generateDictationSentence(word, apiKey) { // Uses OpenAI GPT-5 mini
+async function generateDictationSentence(word, apiKey) { // Uses OpenAI GPT-4o mini
   const prompt = `Create ONE natural English sentence using the word "${word.word}" (${word.type}, meaning: ${word.meaning}).
 
 Requirements:
@@ -711,7 +715,7 @@ Generate a mini challenge with 3 tasks. Reply ONLY with raw JSON:
 
 
 // ─── Claude API — Reading Comprehension ──────────────────────────────────
-async function generateReading(words, level, apiKey) { // Uses OpenAI GPT-5 mini
+async function generateReading(words, level, apiKey) { // Uses OpenAI GPT-4o mini
   const picks = words.slice(0, 5).map(w => `"${w.word}" (${w.meaning})`).join(", ");
   const prompt = `Write a short English reading passage for a Vietnamese learner at ${level} level.
 Include these vocabulary words naturally: ${picks}
@@ -742,7 +746,7 @@ Reply ONLY with raw JSON:
 }
 
 // ─── Claude API — Mini Podcast ────────────────────────────────────────────
-async function generatePodcast(topic, level, apiKey) { // Uses OpenAI GPT-5 mini
+async function generatePodcast(topic, level, apiKey) { // Uses OpenAI GPT-4o mini
   const topicLine = topic ? `Topic: "${topic}"` : `Topic: choose an interesting everyday topic (travel, technology, health, environment, education, etc.)`;
 
   // Random IELTS question types for variety
@@ -963,9 +967,10 @@ RESPONSE (${wc} words):
 ${essay}
 
 Grade strictly on IELTS Task 1 band descriptors (minimum 150 words required).
+Pay special attention to missing data: identify important numbers, trends, comparisons, categories, stages, or overview points from the chart/process that the student did not mention.
 
 Reply ONLY compact single-line JSON (single quotes in strings, Vietnamese for comments):
-{"overallBand":6.5,"wordCount":${wc},"criteria":{"taskAchievement":{"band":6.5,"comment":"phản hồi tiếng Việt về việc mô tả đúng xu hướng chính"},"coherenceCohesion":{"band":6.0,"comment":"phản hồi tiếng Việt"},"lexicalResource":{"band":6.5,"comment":"phản hồi tiếng Việt"},"grammaticalRange":{"band":6.0,"comment":"phản hồi tiếng Việt"}},"strengths":["điểm mạnh 1","điểm mạnh 2"],"improvements":["cải thiện cụ thể 1","cải thiện cụ thể 2","cải thiện cụ thể 3"],"missedFeatures":["xu hướng/số liệu quan trọng bị bỏ sót 1","bị bỏ sót 2"],"keyVocab":["academic word 1","academic word 2","academic word 3"]}`;
+{"overallBand":6.5,"wordCount":${wc},"criteria":{"taskAchievement":{"band":6.5,"comment":"phản hồi tiếng Việt về việc mô tả đúng xu hướng chính"},"coherenceCohesion":{"band":6.0,"comment":"phản hồi tiếng Việt"},"lexicalResource":{"band":6.5,"comment":"phản hồi tiếng Việt"},"grammaticalRange":{"band":6.0,"comment":"phản hồi tiếng Việt"}},"strengths":["điểm mạnh 1","điểm mạnh 2"],"improvements":["cải thiện cụ thể 1","cải thiện cụ thể 2","cải thiện cụ thể 3"],"missedFeatures":["xu hướng/số liệu quan trọng bị bỏ sót 1","bị bỏ sót 2"],"missingDataHighlights":[{"type":"trend|comparison|number|overview|process step","chartEvidence":"số liệu/xu hướng cụ thể từ chart bị bỏ sót","whyImportant":"vì sao điểm này quan trọng cho Task Achievement","suggestedSentence":"câu tiếng Anh mẫu để thêm vào bài"}],"keyVocab":["academic word 1","academic word 2","academic word 3"]}`;
 
   const data = await anthropicFetch(apiKey, {
     model:"claude-haiku-4-5-20251001", max_tokens:1200,
@@ -977,7 +982,7 @@ Reply ONLY compact single-line JSON (single quotes in strings, Vietnamese for co
   catch(e) { throw new Error("Lỗi chấm bài: "+e.message); }
 }
 
-async function generateIeltsPrompt(taskType, apiKey) { // Uses OpenAI GPT-5 mini
+async function generateIeltsPrompt(taskType, apiKey) { // Uses OpenAI GPT-4o mini
   const types = {
     "opinion":    "Opinion/Agree or Disagree — 'To what extent do you agree or disagree?'",
     "discussion": "Discussion — 'Discuss both views and give your own opinion.'",
@@ -1046,7 +1051,7 @@ Reply ONLY with raw JSON (no unescaped double quotes in strings):
 
 
 // ─── Claude API — Generate IELTS Speaking Script ─────────────────────────
-async function generateSpkScript(topic, apiKey) { // Uses OpenAI GPT-5 mini
+async function generateSpkScript(topic, apiKey) { // Uses OpenAI GPT-4o mini
   const chosenTopic = topic || ["hometown & family","work & study","technology","travel & transport","environment","health & lifestyle","arts & culture","education"][Math.floor(Math.random()*8)];
 
   const prompt = `Create a full IELTS Speaking test script on the topic: "${chosenTopic}".
@@ -5569,14 +5574,45 @@ function VocabApp({ apiKey }) {
                           <div className="ielts-band" style={{fontSize:"2.5rem",lineHeight:1,color:ieltsTask1Result.overallBand>=7?"#4ade80":ieltsTask1Result.overallBand>=5.5?"#fbbf24":"#f87171"}}>{ieltsTask1Result.overallBand}</div>
                           <div style={{fontSize:".6rem",color:"#5a4a6a"}}>Band</div>
                         </div>
-                        <div>
-                          <div style={{fontSize:".75rem",color:"#6a5a7a"}}>{ieltsTask1Result.wordCount} words</div>
-                          {ieltsTask1Result.missedFeatures?.length>0&&(
-                            <div style={{fontSize:".78rem",color:"#f87171",fontFamily:"'Crimson Pro',serif",marginTop:".2rem"}}>⚠️ Bỏ sót: {ieltsTask1Result.missedFeatures.slice(0,2).join(" · ")}</div>
-                          )}
-                        </div>
-                      </div>
-                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".5rem",marginBottom:".8rem"}}>
+	                        <div>
+	                          <div style={{fontSize:".75rem",color:"#6a5a7a"}}>{ieltsTask1Result.wordCount} words</div>
+	                          {((ieltsTask1Result.missingDataHighlights?.length||0)+(ieltsTask1Result.missedFeatures?.length||0)>0)&&(
+	                            <div style={{fontSize:".78rem",color:"#f87171",fontFamily:"'Crimson Pro',serif",marginTop:".2rem"}}>⚠️ Có dữ liệu quan trọng cần bổ sung</div>
+	                          )}
+	                        </div>
+	                      </div>
+	                      {((ieltsTask1Result.missingDataHighlights?.length>0) || (ieltsTask1Result.missedFeatures?.length>0))&&(
+	                        <div className="ielts-criterion" style={{borderColor:"rgba(248,113,113,.25)",background:"rgba(248,113,113,.055)",marginBottom:".8rem"}}>
+	                          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",gap:".6rem",marginBottom:".45rem"}}>
+	                            <div style={{fontSize:".68rem",color:"#f87171",letterSpacing:".08em",fontWeight:800}}>🔎 MISSING DATA HIGHLIGHTER</div>
+	                            <div style={{fontSize:".62rem",color:"#7a4a5a"}}>{(ieltsTask1Result.missingDataHighlights||ieltsTask1Result.missedFeatures||[]).length} điểm cần bổ sung</div>
+	                          </div>
+	                          {ieltsTask1Result.missingDataHighlights?.length>0 ? (
+	                            <div style={{display:"grid",gap:".45rem"}}>
+	                              {ieltsTask1Result.missingDataHighlights.map((m,i)=>(
+	                                <div key={i} style={{border:"1px solid rgba(248,113,113,.13)",borderRadius:10,padding:".55rem .65rem",background:"rgba(0,0,0,.16)"}}>
+	                                  <div style={{display:"flex",gap:".4rem",alignItems:"center",marginBottom:".25rem",flexWrap:"wrap"}}>
+	                                    <span style={{fontSize:".62rem",color:"#fecaca",background:"rgba(248,113,113,.13)",borderRadius:999,padding:"1px 8px",textTransform:"uppercase"}}>{m.type||"missing point"}</span>
+	                                    <span style={{fontSize:".76rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif"}}>{m.chartEvidence}</span>
+	                                  </div>
+	                                  {m.whyImportant&&<div style={{fontSize:".74rem",color:"#9a7a8a",fontFamily:"'Crimson Pro',serif",lineHeight:1.45,marginBottom:".25rem"}}>{m.whyImportant}</div>}
+	                                  {m.suggestedSentence&&(
+	                                    <div style={{display:"flex",gap:".4rem",alignItems:"flex-start"}}>
+	                                      <div style={{fontSize:".74rem",color:"#d4c8f0",fontFamily:"'Crimson Pro',serif",lineHeight:1.5,fontStyle:"italic",flex:1}}>“{m.suggestedSentence}”</div>
+	                                      <button className="spkbtn btn" style={{fontSize:".6rem",padding:".1rem .4rem"}} onClick={()=>speak(m.suggestedSentence,0.82)}>🔊</button>
+	                                    </div>
+	                                  )}
+	                                </div>
+	                              ))}
+	                            </div>
+	                          ) : (
+	                            <div style={{display:"grid",gap:".28rem"}}>
+	                              {ieltsTask1Result.missedFeatures.map((s,i)=><div key={i} style={{fontSize:".85rem",color:"#fca5a5",fontFamily:"'Crimson Pro',serif"}}>• {s}</div>)}
+	                            </div>
+	                          )}
+	                        </div>
+	                      )}
+	                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:".5rem",marginBottom:".8rem"}}>
                         {[["taskAchievement","📌 Task"],["coherenceCohesion","🔗 Coherence"],["lexicalResource","📚 Lexical"],["grammaticalRange","⚙️ Grammar"]].map(([k,l])=>{
                           const c=ieltsTask1Result.criteria?.[k];if(!c)return null;
                           const col=c.band>=7?"#4ade80":c.band>=5.5?"#fbbf24":"#f87171";
