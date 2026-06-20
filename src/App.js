@@ -822,7 +822,7 @@ Prompt: "${prompt}"
 Entry: "${entry}"
 
 Find ALL errors: grammar, spelling, word choice, preposition, article, tense, style.
-Return ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics.
+Return ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics. The correctedSentence field is REQUIRED and must contain the full corrected entry.
 {"score":7,"correctedSentence":"fully corrected entry","grammarErrors":[{"error":"e","correction":"c","rule":"quy tắc tiếng Việt"}],"spellingErrors":[{"wrong":"w","correct":"c","tip":"mẹo"}],"styleAdvice":"lời khuyên văn phong cụ thể tiếng Việt có dấu","encouragement":"lời động viên tiếng Việt có dấu"}`;
 
   // Call 2: detailed sentence analysis + lessons
@@ -848,7 +848,7 @@ Output ONLY this JSON (single quotes inside strings, Vietnamese with diacritics)
 Important: lessons array must have 3-5 detailed items. Do not skip lessons. Do not write shallow one-sentence explanations.`;
 
   const [d1, d2] = await Promise.all([
-    anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
+    anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1800,
       system:"English writing coach. ONLY single-line JSON. Single quotes in strings. Full Vietnamese diacritics.",
       messages:[{role:"user",content:p1}]}),
     anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1200,
@@ -863,9 +863,37 @@ Important: lessons array must have 3-5 detailed items. Do not skip lessons. Do n
   try { r1 = repairAndParseJSON(raw1); } catch(e) { throw new Error("Lỗi đọc kết quả: "+e.message); }
   try { r2 = repairAndParseJSON(raw2); } catch(_) {}
 
-  if (!r1.correctedSentence && r1.corrected) r1.correctedSentence = r1.corrected;
+  const pickText = (...values) => values.find(v => typeof v === "string" && v.trim())?.trim() || "";
+  const applyCorrectionsToEntry = () => {
+    let fixed = entry;
+    const replacements = [
+      ...(Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis.map(s => [s.original, s.corrected]) : []),
+      ...(Array.isArray(r1.grammarErrors) ? r1.grammarErrors.map(e => [e.error || e.wrong, e.correction || e.fix || e.correct]) : []),
+      ...(Array.isArray(r1.spellingErrors) ? r1.spellingErrors.map(e => [e.wrong, e.correct]) : []),
+    ];
+    replacements.forEach(([from, to]) => {
+      if (typeof from === "string" && from.trim() && typeof to === "string" && to.trim()) {
+        fixed = fixed.replace(from, to);
+      }
+    });
+    return fixed;
+  };
+
+  if (!r1.correctedSentence) {
+    r1.correctedSentence = pickText(
+      r1.corrected,
+      r1.correctedText,
+      r1.correctedEntry,
+      r1.revisedEntry,
+      r1.rewrittenEntry,
+      r1.fixedEntry,
+      r1.finalVersion
+    );
+  }
   if (!Array.isArray(r1.grammarErrors))  r1.grammarErrors = [];
   if (!Array.isArray(r1.spellingErrors)) r1.spellingErrors = [];
+  if (!r1.correctedSentence) r1.correctedSentence = applyCorrectionsToEntry();
+  if (!r1.correctedSentence) r1.correctedSentence = entry;
   r1.score = r1.score || 5;
   r1.encouragement = r1.encouragement || "";
   const makeDetailedFallbackLesson = (source, kind = "grammar") => {
@@ -5080,7 +5108,9 @@ function VocabApp({ apiKey }) {
                           <span>✅ Đã sửa</span>
                           <button className="spkbtn btn" style={{fontSize:".62rem",padding:".12rem .45rem"}} onClick={()=>speak(journalResult.correctedSentence||journalResult.corrected||"",0.82)}>🔊</button>
                         </div>
-                        <div style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0",lineHeight:1.6}}>{journalResult.correctedSentence||journalResult.corrected}</div>
+                        <div style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0",lineHeight:1.6}}>
+                          {journalResult.correctedSentence||journalResult.corrected||journalInput}
+                        </div>
                       </div>
                     </div>
 
@@ -5149,15 +5179,42 @@ function VocabApp({ apiKey }) {
                                   color:alreadySaved?"#4ade80":"#c4b5fd",cursor:alreadySaved?"default":"pointer",whiteSpace:"nowrap"}}>
                                   {alreadySaved?"✓ Đã lưu":"💾 Lưu lại"}
                                 </button>
-                              </div>
-                              <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
-                              {lesson.example&&(
-                                <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .7rem"}}>
-                                  <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
-                                  <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
-                                </div>
-                              )}
-                            </div>
+	                              </div>
+	                              <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
+	                              {(lesson.wrongPattern || lesson.correctPattern) && (
+	                                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:".45rem",marginBottom:".55rem"}}>
+	                                  {lesson.wrongPattern && (
+	                                    <div style={{background:"rgba(248,113,113,.07)",border:"1px solid rgba(248,113,113,.16)",borderRadius:8,padding:".42rem .6rem"}}>
+	                                      <div style={{fontSize:".62rem",color:"#fca5a5",textTransform:"uppercase",letterSpacing:".08em",marginBottom:".18rem"}}>Sai thường gặp</div>
+	                                      <div style={{fontSize:".8rem",color:"#e7d8ec",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>{lesson.wrongPattern}</div>
+	                                    </div>
+	                                  )}
+	                                  {lesson.correctPattern && (
+	                                    <div style={{background:"rgba(74,222,128,.07)",border:"1px solid rgba(74,222,128,.16)",borderRadius:8,padding:".42rem .6rem"}}>
+	                                      <div style={{fontSize:".62rem",color:"#86efac",textTransform:"uppercase",letterSpacing:".08em",marginBottom:".18rem"}}>Mẫu đúng</div>
+	                                      <div style={{fontSize:".8rem",color:"#e7d8ec",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>{lesson.correctPattern}</div>
+	                                    </div>
+	                                  )}
+	                                </div>
+	                              )}
+	                              {lesson.memoryTip && (
+	                                <div style={{fontSize:".78rem",color:"#c4b5fd",background:"rgba(167,139,250,.08)",border:"1px solid rgba(167,139,250,.12)",borderRadius:8,padding:".42rem .65rem",marginBottom:".55rem"}}>
+	                                  🧠 {lesson.memoryTip}
+	                                </div>
+	                              )}
+	                              {lesson.example&&(
+	                                <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .7rem"}}>
+	                                  <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
+	                                  <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
+	                                </div>
+	                              )}
+	                              {lesson.extraExample&&(
+	                                <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.05)",borderRadius:8,padding:".35rem .7rem",marginTop:".4rem"}}>
+	                                  <span style={{fontSize:".8rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#b9add0",flex:1}}>"{lesson.extraExample}"</span>
+	                                  <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.extraExample,0.85)}>🔊</button>
+	                                </div>
+	                              )}
+	                            </div>
                           );
                         })}
                       </div>
