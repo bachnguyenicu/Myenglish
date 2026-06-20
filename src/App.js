@@ -538,6 +538,27 @@ function repairAndParseJSON(raw) {
   };
 }
 
+function cleanLessonExplanation(text = "") {
+  return String(text || "")
+    .replace(/\s*Đây không chỉ là một lỗi riêng của câu này, mà là một mẫu cần nhớ khi viết những câu tương tự\.\s*/g, " ")
+    .replace(/\s*Khi đọc lại bài, hãy kiểm tra xem ý chính đã có đúng cấu trúc, đúng giới từ\/mạo từ\/thì, và nghe tự nhiên trong tiếng Anh chưa\.?\s*/g, " ")
+    .replace(/\s*Hãy xem đây là một mẫu lỗi cần nhận diện lại mỗi khi viết câu mới, không chỉ là sửa một câu đơn lẻ\.?\s*/g, " ")
+    .replace(/\s*Trước khi gửi bài, đọc lại câu và hỏi: cấu trúc này có đúng ngữ pháp và tự nhiên với người bản xứ không\??\s*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeLessonCard(lesson = {}) {
+  const example = lesson.example || "";
+  const extraExample = lesson.extraExample && lesson.extraExample !== example ? lesson.extraExample : "";
+  return {
+    ...lesson,
+    explanation: cleanLessonExplanation(lesson.explanation),
+    example,
+    extraExample,
+  };
+}
+
 // ─── Claude API — Writing Checker ─────────────────────────────────────────
 async function checkWriting(word, sentence, apiKey) {
   // Call 1: Core feedback (score, corrected, errors, style, encouragement)
@@ -831,27 +852,31 @@ Return ONLY compact single-line JSON. Single quotes inside strings. Full Vietnam
 Entry: "${entry}"
 
 Task 1: Find each specific error (grammar, word choice, preposition, tense, style).
-Task 2: Create 3-5 detailed grammar/style lessons based on the patterns of errors found.
-Each lesson must be useful later, even when the learner reads it outside this journal.
+Task 2: Create 3-5 highly practical grammar/style lessons based on the most important error patterns.
+Each lesson must feel personal to this learner's sentence, but also useful later.
 For every lesson:
 - title: specific Vietnamese title, not generic
-- explanation: 2-4 Vietnamese sentences explaining the rule, why the original was wrong/unnatural, when to use the correct structure, and how to avoid repeating it
+- explanation: 2-3 Vietnamese sentences. Mention the exact problem, the reason, and the correction logic. No generic filler.
 - wrongPattern: short incorrect pattern or weak pattern from the learner
 - correctPattern: reusable correct pattern
-- example: natural English example
-- extraExample: second natural English example if useful
-- memoryTip: one short Vietnamese tip to remember the rule
+- example: a NEW natural English example, not just repeating correctPattern
+- extraExample: a second NEW example only if it adds value; otherwise use an empty string
+- memoryTip: one concrete Vietnamese self-check tip, specific to this error type
 
 Output ONLY this JSON (single quotes inside strings, Vietnamese with diacritics):
 {"sentenceAnalysis":[{"original":"bad phrase from text","corrected":"fixed phrase","type":"grammar","explanation":"giải thích lỗi tiếng Việt có dấu"}],"lessons":[{"title":"Tên bài học cụ thể tiếng Việt","explanation":"Giải thích chi tiết 2-4 câu tiếng Việt có dấu","wrongPattern":"wrong pattern","correctPattern":"correct pattern","example":"Example sentence in English.","extraExample":"Another example sentence in English.","memoryTip":"mẹo nhớ ngắn tiếng Việt"}]}
 
-Important: lessons array must have 3-5 detailed items. Do not skip lessons. Do not write shallow one-sentence explanations.`;
+Important:
+- lessons array must have 3-5 useful items. Do not skip lessons.
+- Never use repeated filler like 'Đây không chỉ là một lỗi riêng của câu này...' or 'Khi đọc lại bài... đúng cấu trúc, đúng giới từ/mạo từ/thì...'.
+- Do not duplicate example and extraExample.
+- Prefer quality over length.`;
 
   const [d1, d2] = await Promise.all([
     anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1800,
       system:"English writing coach. ONLY single-line JSON. Single quotes in strings. Full Vietnamese diacritics.",
       messages:[{role:"user",content:p1}]}),
-    anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1200,
+    anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:1600,
       system:"English writing coach. ONLY single-line JSON. Single quotes in strings. Full Vietnamese diacritics.",
       messages:[{role:"user",content:p2}]})
   ]);
@@ -901,20 +926,41 @@ Important: lessons array must have 3-5 detailed items. Do not skip lessons. Do n
     const corrected = source?.corrected || source?.correction || source?.fix || "";
     const type = source?.type || kind;
     const rule = source?.explanation || source?.rule || "";
-    const label = type === "style" ? "Cải thiện văn phong tự nhiên" : `Ôn lại lỗi ${type}`;
-    return {
-      title: label,
-      explanation: rule
-        ? `${rule} Đây không chỉ là một lỗi riêng của câu này, mà là một mẫu cần nhớ khi viết những câu tương tự. Khi đọc lại bài, hãy kiểm tra xem ý chính đã có đúng cấu trúc, đúng giới từ/mạo từ/thì, và nghe tự nhiên trong tiếng Anh chưa.`
-        : `Bạn đã viết "${original}" nhưng nên sửa thành "${corrected}". Hãy xem đây là một mẫu lỗi cần nhận diện lại mỗi khi viết câu mới, không chỉ là sửa một câu đơn lẻ. Trước khi gửi bài, đọc lại câu và hỏi: cấu trúc này có đúng ngữ pháp và tự nhiên với người bản xứ không?`,
+    const lower = `${type} ${rule} ${original} ${corrected}`.toLowerCase();
+    const isTense = /tense|past|present|quá khứ|hiện tại|thì/.test(lower);
+    const isPrep = /preposition|giới từ|for|to|with|in|on|at/.test(lower);
+    const isArticle = /article|mạo từ|\ba\b|\ban\b|\bthe\b/.test(lower);
+    const isWordChoice = /word choice|vocabulary|collocation|từ vựng|dùng từ|natural|tự nhiên/.test(lower);
+    const isStyle = type === "style" || /style|văn phong|natural|tự nhiên/.test(lower);
+    const title =
+      isTense ? "Chọn đúng thì khi kể lại sự việc" :
+      isPrep ? "Dùng đúng giới từ/cụm giới từ" :
+      isArticle ? "Kiểm tra mạo từ trước danh từ" :
+      isWordChoice ? "Chọn cách diễn đạt tự nhiên hơn" :
+      isStyle ? "Viết câu tự nhiên và gọn hơn" :
+      "Sửa mẫu lỗi trong câu";
+    const issue = original ? `Ở câu này, "${original}" là phần chưa ổn` : "Ở câu này có một điểm chưa tự nhiên";
+    const fix = corrected ? `Cách sửa tốt hơn là "${corrected}"` : "Hãy dùng mẫu sửa bên dưới";
+    const explanation = rule
+      ? `${cleanLessonExplanation(rule)} ${issue}; ${fix}.`
+      : `${issue}; ${fix}. Khi gặp dạng tương tự, hãy xác định trước ý chính rồi chọn đúng thì, giới từ hoặc cụm từ đi kèm.`;
+    const memoryTip =
+      isTense ? "Nếu đang kể một quyết định/sự kiện đã xảy ra, thử đổi động từ chính sang quá khứ trước." :
+      isPrep ? "Sau mỗi động từ/cụm từ quan trọng, kiểm tra giới từ đi kèm thay vì dịch từng chữ từ tiếng Việt." :
+      isArticle ? "Trước danh từ số ít, tự hỏi: danh từ này cần a/an, the, hay không cần mạo từ?" :
+      isWordChoice ? "Nếu câu dịch từ tiếng Việt nghe cứng, thử nghĩ cách người bản xứ thường ghép từ với nhau." :
+      "Đọc lại câu thành tiếng: nếu nghe dài hoặc vòng, hãy tách ý và dùng cấu trúc đơn giản hơn.";
+    return normalizeLessonCard({
+      title,
+      explanation,
       wrongPattern: original,
       correctPattern: corrected,
-      example: corrected || original || "I will write this sentence more accurately next time.",
-      extraExample: corrected ? corrected : "",
-      memoryTip: "Sau khi sửa lỗi, hãy tự viết thêm 1 câu mới cùng mẫu đúng để biến nó thành phản xạ.",
-    };
+      example: corrected || "I made a clearer decision yesterday.",
+      extraExample: "",
+      memoryTip,
+    });
   };
-  const journalLessons = Array.isArray(r2.lessons) ? r2.lessons.filter(l => l?.title).slice(0,5) : [];
+  const journalLessons = Array.isArray(r2.lessons) ? r2.lessons.filter(l => l?.title).map(normalizeLessonCard).slice(0,5) : [];
   const fallbackLessons = journalLessons.length ? [] : [
     ...(Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis : []).map(s => makeDetailedFallbackLesson(s, s?.type || "grammar")),
     ...r1.grammarErrors.map(e => makeDetailedFallbackLesson(e, "grammar")),
@@ -3026,7 +3072,7 @@ function VocabApp({ apiKey }) {
                                     {alreadySaved ? "✓ Đã lưu" : "💾 Lưu lại"}
                                   </button>
                                 </div>
-                                <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
+                                <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{cleanLessonExplanation(lesson.explanation)}</div>
                                 {lesson.example && (
                                   <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .7rem"}}>
                                     <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
@@ -3772,7 +3818,7 @@ function VocabApp({ apiKey }) {
 
 	                    {/* Explanation */}
 	                    <div style={{fontSize:".9rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.75,marginBottom:".5rem"}}>
-	                      {lesson.explanation}
+		                      {cleanLessonExplanation(lesson.explanation)}
 	                    </div>
 
 	                    {/* Pattern note */}
@@ -4304,7 +4350,7 @@ function VocabApp({ apiKey }) {
                                 {alreadySaved?"✓ Đã lưu":"💾 Lưu lại"}
                               </button>
 	                              </div>
-	                              <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
+	                              <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{cleanLessonExplanation(lesson.explanation)}</div>
 	                              {(lesson.wrongPattern || lesson.correctPattern) && (
 	                                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:".45rem",marginBottom:".55rem"}}>
 	                                  {lesson.wrongPattern && (
@@ -5172,7 +5218,7 @@ function VocabApp({ apiKey }) {
                                 <h4 style={{color:alreadySaved?"#4ade80":"#c4b5fd",flex:1}}>📖 {lesson.title}</h4>
                                 <button className="btn" onClick={()=>{
                                   if(alreadySaved) return;
-                                  setSavedLessons(prev=>[{...lesson,word:"(nhật ký)",savedAt:Date.now()},...prev]);
+	                                  setSavedLessons(prev=>[{...normalizeLessonCard(lesson),word:"(nhật ký)",savedAt:Date.now()},...prev]);
                                 }} style={{padding:".2rem .6rem",borderRadius:8,fontSize:".72rem",fontWeight:700,
                                   background:alreadySaved?"rgba(74,222,128,.12)":"rgba(167,139,250,.15)",
                                   border:`1px solid ${alreadySaved?"rgba(74,222,128,.3)":"rgba(167,139,250,.3)"}`,
@@ -5180,7 +5226,7 @@ function VocabApp({ apiKey }) {
                                   {alreadySaved?"✓ Đã lưu":"💾 Lưu lại"}
                                 </button>
 	                              </div>
-	                              <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
+		                              <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{cleanLessonExplanation(lesson.explanation)}</div>
 	                              {(lesson.wrongPattern || lesson.correctPattern) && (
 	                                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:".45rem",marginBottom:".55rem"}}>
 	                                  {lesson.wrongPattern && (
