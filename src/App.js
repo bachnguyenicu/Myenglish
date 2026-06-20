@@ -831,12 +831,21 @@ Return ONLY compact single-line JSON. Single quotes inside strings. Full Vietnam
 Entry: "${entry}"
 
 Task 1: Find each specific error (grammar, word choice, preposition, tense, style).
-Task 2: Create 3-5 grammar lessons based on the patterns of errors found.
+Task 2: Create 3-5 detailed grammar/style lessons based on the patterns of errors found.
+Each lesson must be useful later, even when the learner reads it outside this journal.
+For every lesson:
+- title: specific Vietnamese title, not generic
+- explanation: 2-4 Vietnamese sentences explaining the rule, why the original was wrong/unnatural, when to use the correct structure, and how to avoid repeating it
+- wrongPattern: short incorrect pattern or weak pattern from the learner
+- correctPattern: reusable correct pattern
+- example: natural English example
+- extraExample: second natural English example if useful
+- memoryTip: one short Vietnamese tip to remember the rule
 
 Output ONLY this JSON (single quotes inside strings, Vietnamese with diacritics):
-{"sentenceAnalysis":[{"original":"bad phrase from text","corrected":"fixed phrase","type":"grammar","explanation":"giải thích lỗi tiếng Việt có dấu"}],"lessons":[{"title":"Tên bài học tiếng Việt","explanation":"Giải thích ngắn tiếng Việt có dấu","example":"Example sentence in English."},{"title":"Tên bài học 2","explanation":"Giải thích 2","example":"Example 2."}]}
+{"sentenceAnalysis":[{"original":"bad phrase from text","corrected":"fixed phrase","type":"grammar","explanation":"giải thích lỗi tiếng Việt có dấu"}],"lessons":[{"title":"Tên bài học cụ thể tiếng Việt","explanation":"Giải thích chi tiết 2-4 câu tiếng Việt có dấu","wrongPattern":"wrong pattern","correctPattern":"correct pattern","example":"Example sentence in English.","extraExample":"Another example sentence in English.","memoryTip":"mẹo nhớ ngắn tiếng Việt"}]}
 
-Important: lessons array must have 3-5 items. Do not skip lessons.`;
+Important: lessons array must have 3-5 detailed items. Do not skip lessons. Do not write shallow one-sentence explanations.`;
 
   const [d1, d2] = await Promise.all([
     anthropicFetch(apiKey, {model:"claude-haiku-4-5-20251001",max_tokens:900,
@@ -859,18 +868,28 @@ Important: lessons array must have 3-5 items. Do not skip lessons.`;
   if (!Array.isArray(r1.spellingErrors)) r1.spellingErrors = [];
   r1.score = r1.score || 5;
   r1.encouragement = r1.encouragement || "";
+  const makeDetailedFallbackLesson = (source, kind = "grammar") => {
+    const original = source?.original || source?.error || "";
+    const corrected = source?.corrected || source?.correction || source?.fix || "";
+    const type = source?.type || kind;
+    const rule = source?.explanation || source?.rule || "";
+    const label = type === "style" ? "Cải thiện văn phong tự nhiên" : `Ôn lại lỗi ${type}`;
+    return {
+      title: label,
+      explanation: rule
+        ? `${rule} Đây không chỉ là một lỗi riêng của câu này, mà là một mẫu cần nhớ khi viết những câu tương tự. Khi đọc lại bài, hãy kiểm tra xem ý chính đã có đúng cấu trúc, đúng giới từ/mạo từ/thì, và nghe tự nhiên trong tiếng Anh chưa.`
+        : `Bạn đã viết "${original}" nhưng nên sửa thành "${corrected}". Hãy xem đây là một mẫu lỗi cần nhận diện lại mỗi khi viết câu mới, không chỉ là sửa một câu đơn lẻ. Trước khi gửi bài, đọc lại câu và hỏi: cấu trúc này có đúng ngữ pháp và tự nhiên với người bản xứ không?`,
+      wrongPattern: original,
+      correctPattern: corrected,
+      example: corrected || original || "I will write this sentence more accurately next time.",
+      extraExample: corrected ? corrected : "",
+      memoryTip: "Sau khi sửa lỗi, hãy tự viết thêm 1 câu mới cùng mẫu đúng để biến nó thành phản xạ.",
+    };
+  };
   const journalLessons = Array.isArray(r2.lessons) ? r2.lessons.filter(l => l?.title).slice(0,5) : [];
   const fallbackLessons = journalLessons.length ? [] : [
-    ...(Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis : []).map(s => ({
-      title: s.type === "style" ? "Cải thiện văn phong tự nhiên" : "Ôn lại lỗi " + (s.type || "grammar"),
-      explanation: s.explanation || `Bạn đã viết "${s.original}" nhưng nên sửa thành "${s.corrected}". Hãy chú ý mẫu lỗi này trong các câu sau.`,
-      example: s.corrected || s.original || "I will write this sentence more accurately next time.",
-    })),
-    ...r1.grammarErrors.map(e => ({
-      title: "Grammar: " + (e.rule || "sửa lỗi câu"),
-      explanation: e.rule || `Dạng đúng là "${e.correction || e.fix}". Hãy đọc lại câu trước khi dùng thì, mạo từ hoặc giới từ.`,
-      example: e.correction || e.fix || "This is the corrected form.",
-    })),
+    ...(Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis : []).map(s => makeDetailedFallbackLesson(s, s?.type || "grammar")),
+    ...r1.grammarErrors.map(e => makeDetailedFallbackLesson(e, "grammar")),
   ].slice(0,3);
 
   return {
@@ -3723,20 +3742,50 @@ function VocabApp({ apiKey }) {
                       </div>
                     </div>
 
-                    {/* Explanation */}
-                    <div style={{fontSize:".9rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.75,marginBottom:".5rem"}}>
-                      {lesson.explanation}
-                    </div>
+	                    {/* Explanation */}
+	                    <div style={{fontSize:".9rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.75,marginBottom:".5rem"}}>
+	                      {lesson.explanation}
+	                    </div>
 
-                    {/* Example */}
-                    {lesson.example && (
-                      <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .75rem"}}>
-                        <span style={{fontSize:".85rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
-                        <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
-                      </div>
-                    )}
-                  </div>
-                ))}
+	                    {/* Pattern note */}
+	                    {(lesson.wrongPattern || lesson.correctPattern) && (
+	                      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:".45rem",marginBottom:".55rem"}}>
+	                        {lesson.wrongPattern && (
+	                          <div style={{background:"rgba(248,113,113,.07)",border:"1px solid rgba(248,113,113,.16)",borderRadius:8,padding:".42rem .6rem"}}>
+	                            <div style={{fontSize:".62rem",color:"#fca5a5",textTransform:"uppercase",letterSpacing:".08em",marginBottom:".18rem"}}>Sai thường gặp</div>
+	                            <div style={{fontSize:".8rem",color:"#e7d8ec",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>{lesson.wrongPattern}</div>
+	                          </div>
+	                        )}
+	                        {lesson.correctPattern && (
+	                          <div style={{background:"rgba(74,222,128,.07)",border:"1px solid rgba(74,222,128,.16)",borderRadius:8,padding:".42rem .6rem"}}>
+	                            <div style={{fontSize:".62rem",color:"#86efac",textTransform:"uppercase",letterSpacing:".08em",marginBottom:".18rem"}}>Mẫu đúng</div>
+	                            <div style={{fontSize:".8rem",color:"#e7d8ec",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>{lesson.correctPattern}</div>
+	                          </div>
+	                        )}
+	                      </div>
+	                    )}
+
+	                    {lesson.memoryTip && (
+	                      <div style={{fontSize:".78rem",color:"#c4b5fd",background:"rgba(167,139,250,.08)",border:"1px solid rgba(167,139,250,.12)",borderRadius:8,padding:".42rem .65rem",marginBottom:".55rem"}}>
+	                        🧠 {lesson.memoryTip}
+	                      </div>
+	                    )}
+
+	                    {/* Example */}
+	                    {lesson.example && (
+	                      <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .75rem"}}>
+	                        <span style={{fontSize:".85rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
+	                        <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
+	                      </div>
+	                    )}
+	                    {lesson.extraExample && (
+	                      <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.05)",borderRadius:8,padding:".35rem .75rem",marginTop:".4rem"}}>
+	                        <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#b9add0",flex:1}}>"{lesson.extraExample}"</span>
+	                        <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.extraExample,0.85)}>🔊</button>
+	                      </div>
+	                    )}
+	                  </div>
+	                ))}
               </div>
             )}
           </div>
@@ -4226,16 +4275,43 @@ function VocabApp({ apiKey }) {
                                 color:alreadySaved?"#4ade80":"#c4b5fd",cursor:alreadySaved?"default":"pointer",whiteSpace:"nowrap"}}>
                                 {alreadySaved?"✓ Đã lưu":"💾 Lưu lại"}
                               </button>
-                            </div>
-                            <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
-                            {lesson.example&&(
-                              <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .7rem"}}>
-                                <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
-                                <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
-                              </div>
-                            )}
-                          </div>
-                        );
+	                              </div>
+	                              <div style={{fontSize:".88rem",color:"#a09ab0",fontFamily:"'Crimson Pro',serif",lineHeight:1.7,marginBottom:".5rem"}}>{lesson.explanation}</div>
+	                              {(lesson.wrongPattern || lesson.correctPattern) && (
+	                                <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(180px,1fr))",gap:".45rem",marginBottom:".55rem"}}>
+	                                  {lesson.wrongPattern && (
+	                                    <div style={{background:"rgba(248,113,113,.07)",border:"1px solid rgba(248,113,113,.16)",borderRadius:8,padding:".42rem .6rem"}}>
+	                                      <div style={{fontSize:".62rem",color:"#fca5a5",textTransform:"uppercase",letterSpacing:".08em",marginBottom:".18rem"}}>Sai thường gặp</div>
+	                                      <div style={{fontSize:".8rem",color:"#e7d8ec",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>{lesson.wrongPattern}</div>
+	                                    </div>
+	                                  )}
+	                                  {lesson.correctPattern && (
+	                                    <div style={{background:"rgba(74,222,128,.07)",border:"1px solid rgba(74,222,128,.16)",borderRadius:8,padding:".42rem .6rem"}}>
+	                                      <div style={{fontSize:".62rem",color:"#86efac",textTransform:"uppercase",letterSpacing:".08em",marginBottom:".18rem"}}>Mẫu đúng</div>
+	                                      <div style={{fontSize:".8rem",color:"#e7d8ec",fontFamily:"'Crimson Pro',serif",fontStyle:"italic"}}>{lesson.correctPattern}</div>
+	                                    </div>
+	                                  )}
+	                                </div>
+	                              )}
+	                              {lesson.memoryTip && (
+	                                <div style={{fontSize:".78rem",color:"#c4b5fd",background:"rgba(167,139,250,.08)",border:"1px solid rgba(167,139,250,.12)",borderRadius:8,padding:".42rem .65rem",marginBottom:".55rem"}}>
+	                                  🧠 {lesson.memoryTip}
+	                                </div>
+	                              )}
+	                              {lesson.example&&(
+	                                <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.08)",borderRadius:8,padding:".4rem .7rem"}}>
+	                                  <span style={{fontSize:".82rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#d4c8f0",flex:1}}>"{lesson.example}"</span>
+	                                  <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.example,0.85)}>🔊</button>
+	                                </div>
+	                              )}
+	                              {lesson.extraExample&&(
+	                                <div style={{display:"flex",alignItems:"center",gap:".5rem",background:"rgba(167,139,250,.05)",borderRadius:8,padding:".35rem .7rem",marginTop:".4rem"}}>
+	                                  <span style={{fontSize:".8rem",fontFamily:"'Crimson Pro',serif",fontStyle:"italic",color:"#b9add0",flex:1}}>"{lesson.extraExample}"</span>
+	                                  <button className="spkbtn btn" style={{fontSize:".65rem",padding:".15rem .5rem"}} onClick={()=>speak(lesson.extraExample,0.85)}>🔊</button>
+	                                </div>
+	                              )}
+	                            </div>
+	                          );
                       })}
                     </div>
                   )}
