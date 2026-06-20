@@ -846,30 +846,31 @@ Find ALL errors: grammar, spelling, word choice, preposition, article, tense, st
 Return ONLY compact single-line JSON. Single quotes inside strings. Full Vietnamese diacritics. The correctedSentence field is REQUIRED and must contain the full corrected entry.
 {"score":7,"correctedSentence":"fully corrected entry","grammarErrors":[{"error":"e","correction":"c","rule":"quy tắc tiếng Việt"}],"spellingErrors":[{"wrong":"w","correct":"c","tip":"mẹo"}],"styleAdvice":"lời khuyên văn phong cụ thể tiếng Việt có dấu","encouragement":"lời động viên tiếng Việt có dấu"}`;
 
-  // Call 2: detailed sentence analysis + lessons
-  const p2 = `English writing coach. Analyze this journal entry and provide learning lessons.
+  // Call 2: detailed sentence analysis + concise reusable lessons
+  const p2 = `English writing coach. Analyze this journal entry and create concise learning notes.
 
 Entry: "${entry}"
 
 Task 1: Find each specific error (grammar, word choice, preposition, tense, style).
-Task 2: Create 3-5 highly practical grammar/style lessons based on the most important error patterns.
-Each lesson must feel personal to this learner's sentence, but also useful later.
-For every lesson:
-- title: specific Vietnamese title, not generic
-- explanation: 2-3 Vietnamese sentences. Mention the exact problem, the reason, and the correction logic. No generic filler.
-- wrongPattern: short incorrect pattern or weak pattern from the learner
-- correctPattern: reusable correct pattern
-- example: a NEW natural English example, not just repeating correctPattern
-- extraExample: a second NEW example only if it adds value; otherwise use an empty string
-- memoryTip: one concrete Vietnamese self-check tip, specific to this error type
+Task 2: Create ONLY 2-3 short reusable lessons, like a grammar notebook.
+
+Lesson quality rules:
+- Do NOT create one lesson for every error. SentenceAnalysis already does that.
+- Each lesson must teach a reusable rule/pattern, not repeat the corrected phrase.
+- Keep explanation short: 1-2 Vietnamese sentences, clear and memorable.
+- Title should name the real pattern, for example "Cấu trúc 'opportunity to V'", "Kể chuyện đã xảy ra: past simple", "Lược bỏ who/that khi là tân ngữ".
+- example must be a NEW natural English sentence that applies the rule.
+- word is optional: one keyword/pattern tag such as "opportunity to V", "past simple", "relative clause".
+- No wrongPattern, correctPattern, memoryTip, or extraExample.
 
 Output ONLY this JSON (single quotes inside strings, Vietnamese with diacritics):
-{"sentenceAnalysis":[{"original":"bad phrase from text","corrected":"fixed phrase","type":"grammar","explanation":"giải thích lỗi tiếng Việt có dấu"}],"lessons":[{"title":"Tên bài học cụ thể tiếng Việt","explanation":"Giải thích chi tiết 2-4 câu tiếng Việt có dấu","wrongPattern":"wrong pattern","correctPattern":"correct pattern","example":"Example sentence in English.","extraExample":"Another example sentence in English.","memoryTip":"mẹo nhớ ngắn tiếng Việt"}]}
+{"sentenceAnalysis":[{"original":"bad phrase from text","corrected":"fixed phrase","type":"grammar","explanation":"giải thích lỗi tiếng Việt có dấu"}],"lessons":[{"title":"Tên bài học ngắn gọn","word":"pattern tag","explanation":"1-2 câu giải thích súc tích tiếng Việt","example":"New natural English example."}]}
 
 Important:
-- lessons array must have 3-5 useful items. Do not skip lessons.
+- lessons array must have 2-3 useful items.
 - Never use repeated filler like 'Đây không chỉ là một lỗi riêng của câu này...' or 'Khi đọc lại bài... đúng cấu trúc, đúng giới từ/mạo từ/thì...'.
-- Do not duplicate example and extraExample.
+- Do not repeat the same lesson title.
+- Do not make lessons named only "Dùng đúng giới từ/cụm giới từ" unless the actual reusable phrase is named in the title.
 - Prefer quality over length.`;
 
   const [d1, d2] = await Promise.all([
@@ -921,50 +922,77 @@ Important:
   if (!r1.correctedSentence) r1.correctedSentence = entry;
   r1.score = r1.score || 5;
   r1.encouragement = r1.encouragement || "";
-  const makeDetailedFallbackLesson = (source, kind = "grammar") => {
-    const original = source?.original || source?.error || "";
-    const corrected = source?.corrected || source?.correction || source?.fix || "";
-    const type = source?.type || kind;
-    const rule = source?.explanation || source?.rule || "";
-    const lower = `${type} ${rule} ${original} ${corrected}`.toLowerCase();
-    const isTense = /tense|past|present|quá khứ|hiện tại|thì/.test(lower);
-    const isPrep = /preposition|giới từ|for|to|with|in|on|at/.test(lower);
-    const isArticle = /article|mạo từ|\ba\b|\ban\b|\bthe\b/.test(lower);
-    const isWordChoice = /word choice|vocabulary|collocation|từ vựng|dùng từ|natural|tự nhiên/.test(lower);
-    const isStyle = type === "style" || /style|văn phong|natural|tự nhiên/.test(lower);
-    const title =
-      isTense ? "Chọn đúng thì khi kể lại sự việc" :
-      isPrep ? "Dùng đúng giới từ/cụm giới từ" :
-      isArticle ? "Kiểm tra mạo từ trước danh từ" :
-      isWordChoice ? "Chọn cách diễn đạt tự nhiên hơn" :
-      isStyle ? "Viết câu tự nhiên và gọn hơn" :
-      "Sửa mẫu lỗi trong câu";
-    const issue = original ? `Ở câu này, "${original}" là phần chưa ổn` : "Ở câu này có một điểm chưa tự nhiên";
-    const fix = corrected ? `Cách sửa tốt hơn là "${corrected}"` : "Hãy dùng mẫu sửa bên dưới";
-    const explanation = rule
-      ? `${cleanLessonExplanation(rule)} ${issue}; ${fix}.`
-      : `${issue}; ${fix}. Khi gặp dạng tương tự, hãy xác định trước ý chính rồi chọn đúng thì, giới từ hoặc cụm từ đi kèm.`;
-    const memoryTip =
-      isTense ? "Nếu đang kể một quyết định/sự kiện đã xảy ra, thử đổi động từ chính sang quá khứ trước." :
-      isPrep ? "Sau mỗi động từ/cụm từ quan trọng, kiểm tra giới từ đi kèm thay vì dịch từng chữ từ tiếng Việt." :
-      isArticle ? "Trước danh từ số ít, tự hỏi: danh từ này cần a/an, the, hay không cần mạo từ?" :
-      isWordChoice ? "Nếu câu dịch từ tiếng Việt nghe cứng, thử nghĩ cách người bản xứ thường ghép từ với nhau." :
-      "Đọc lại câu thành tiếng: nếu nghe dài hoặc vòng, hãy tách ý và dùng cấu trúc đơn giản hơn.";
-    return normalizeLessonCard({
-      title,
-      explanation,
-      wrongPattern: original,
-      correctPattern: corrected,
-      example: corrected || "I made a clearer decision yesterday.",
-      extraExample: "",
-      memoryTip,
+  const buildConciseFallbackLessons = () => {
+    const seen = new Set();
+    const lessons = [];
+    const sources = [
+      ...(Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis : []),
+      ...r1.grammarErrors,
+    ];
+    const add = (key, lesson) => {
+      if (seen.has(key) || lessons.length >= 3) return;
+      seen.add(key);
+      lessons.push(normalizeLessonCard(lesson));
+    };
+    sources.forEach(src => {
+      const original = src?.original || src?.error || "";
+      const corrected = src?.corrected || src?.correction || src?.fix || "";
+      const text = `${src?.type || ""} ${src?.explanation || ""} ${src?.rule || ""} ${original} ${corrected}`.toLowerCase();
+      if (/opportunit/.test(text)) {
+        add("opportunity", {
+          title: "Cấu trúc 'opportunity to V'",
+          word: "opportunity to V",
+          explanation: "Khi nói 'cơ hội làm gì', dùng opportunity + to + động từ nguyên mẫu. Không dùng V-ing ngay sau opportunity trong mẫu này.",
+          example: "I had the opportunity to work with an excellent team.",
+        });
+      } else if (/relative|who i|whom|person who|người mà|đại từ quan hệ/.test(text)) {
+        add("relative-object", {
+          title: "Lược bỏ who/that khi là tân ngữ",
+          word: "relative clause",
+          explanation: "Khi who/that là tân ngữ của động từ phía sau, có thể lược bỏ để câu gọn và tự nhiên hơn. Chủ ngữ của mệnh đề sau vẫn phải rõ.",
+          example: "The doctor I met yesterday was very kind.",
+        });
+      } else if (/stay up|stay for|up to|for three|for \d|duration|khoảng thời gian/.test(text)) {
+        add("duration-for", {
+          title: "Diễn tả thời lượng với 'for'",
+          word: "for + duration",
+          explanation: "Khi nói một hành động kéo dài bao lâu, dùng for + khoảng thời gian. Up to thường nghĩa là 'tối đa', không dùng để nói thời lượng thông thường.",
+          example: "We stayed in Da Lat for three days.",
+        });
+      } else if (/tense|past|quá khứ|yesterday|last|ago|changed|decided|booked|said/.test(text)) {
+        add("past-simple", {
+          title: "Kể chuyện đã xảy ra: past simple",
+          word: "past simple",
+          explanation: "Khi kể lại việc đã xảy ra và đã kết thúc, động từ chính thường chuyển sang quá khứ đơn. Dùng past simple giúp câu chuyện rõ mốc thời gian hơn.",
+          example: "We changed our plan and booked another bus.",
+        });
+      } else if (/article|mạo từ|\ba\b|\ban\b|\bthe\b/.test(text)) {
+        add("articles", {
+          title: "Mạo từ trước danh từ số ít",
+          word: "a/an/the",
+          explanation: "Danh từ đếm được số ít thường cần a/an hoặc the. A/an dùng khi nhắc lần đầu hoặc nói chung; the dùng khi người nghe đã biết đối tượng.",
+          example: "She found a hotel near the lake.",
+        });
+      } else if (/collocation|word choice|từ vựng|natural|tự nhiên|style|văn phong/.test(text)) {
+        add("natural-wording", {
+          title: "Chọn cụm từ tự nhiên hơn",
+          word: "collocation",
+          explanation: "Một câu đúng ngữ pháp vẫn có thể nghe cứng nếu ghép từ theo tiếng Việt. Hãy ưu tiên các cụm người bản xứ hay dùng thay vì dịch từng chữ.",
+          example: "I felt relieved after hearing her decision.",
+        });
+      }
     });
+    return lessons;
   };
-  const journalLessons = Array.isArray(r2.lessons) ? r2.lessons.filter(l => l?.title).map(normalizeLessonCard).slice(0,5) : [];
-  const fallbackLessons = journalLessons.length ? [] : [
-    ...(Array.isArray(r2.sentenceAnalysis) ? r2.sentenceAnalysis : []).map(s => makeDetailedFallbackLesson(s, s?.type || "grammar")),
-    ...r1.grammarErrors.map(e => makeDetailedFallbackLesson(e, "grammar")),
-  ].slice(0,3);
+  const journalLessons = Array.isArray(r2.lessons)
+    ? r2.lessons.filter(l => l?.title && l?.explanation).map(l => normalizeLessonCard({
+        title: l.title,
+        word: l.word || l.tag || l.pattern || "",
+        explanation: l.explanation,
+        example: l.example || "",
+      })).slice(0,3)
+    : [];
+  const fallbackLessons = journalLessons.length ? [] : buildConciseFallbackLessons();
 
   return {
     ...r1,
@@ -5215,10 +5243,17 @@ function VocabApp({ apiKey }) {
                           return (
                             <div key={i} className="lesson-card" style={{borderColor:alreadySaved?"rgba(74,222,128,.25)":"rgba(167,139,250,.18)"}}>
                               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",gap:".5rem",marginBottom:".35rem"}}>
-                                <h4 style={{color:alreadySaved?"#4ade80":"#c4b5fd",flex:1}}>📖 {lesson.title}</h4>
-                                <button className="btn" onClick={()=>{
-                                  if(alreadySaved) return;
-	                                  setSavedLessons(prev=>[{...normalizeLessonCard(lesson),word:"(nhật ký)",savedAt:Date.now()},...prev]);
+	                                <div style={{flex:1}}>
+	                                  <h4 style={{color:alreadySaved?"#4ade80":"#c4b5fd",marginBottom:lesson.word?".14rem":0}}>📖 {lesson.title}</h4>
+	                                  {lesson.word && (
+	                                    <span style={{fontSize:".65rem",color:"#7c6b95",background:"rgba(167,139,250,.08)",borderRadius:6,padding:"1px 7px"}}>
+	                                      {lesson.word}
+	                                    </span>
+	                                  )}
+	                                </div>
+	                                <button className="btn" onClick={()=>{
+	                                  if(alreadySaved) return;
+		                                  setSavedLessons(prev=>[{...normalizeLessonCard(lesson),word:lesson.word||"(nhật ký)",savedAt:Date.now()},...prev]);
                                 }} style={{padding:".2rem .6rem",borderRadius:8,fontSize:".72rem",fontWeight:700,
                                   background:alreadySaved?"rgba(74,222,128,.12)":"rgba(167,139,250,.15)",
                                   border:`1px solid ${alreadySaved?"rgba(74,222,128,.3)":"rgba(167,139,250,.3)"}`,
