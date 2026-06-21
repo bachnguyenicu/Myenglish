@@ -641,44 +641,99 @@ Reply with ONLY the sentence, no quotes, no explanation.`;
 }
 
 
-// ─── Claude API — Generate Conversation Script ────────────────────────────
-async function generateConvoScript(topic, level, words, apiKey) {
-  const wordHint = words.length > 0
-    ? `Try to naturally include 1-2 of these vocabulary words: ${words.slice(0,4).map(w=>w.word).join(", ")}.`
-    : "";
-  const prompt = `Create a natural 2-person English conversation for a Vietnamese learner at ${level} level.
-Topic: "${topic || "daily life, travel, or work"}"
-${wordHint}
+// ─── OpenAI — Open conversation starter ────────────────────────────────────
+async function generateOpenConversation(topic, level, apiKey) {
+  const prompt = `Create a natural English conversation starter for a Vietnamese learner.
+
+Topic requested by learner: "${topic || "daily life, work, travel, health, or study"}"
+Learner level: ${level}
 
 Rules:
-- 5-7 turns total (alternating AI then User)
-- AI speaks first
-- Each turn: 1-2 natural sentences, realistic dialogue
-- User turns should be achievable for ${level} level
-- No greetings/farewells needed, dive into the topic
-- Keep it conversational, not textbook-stiff
+- You are the AI conversation partner.
+- Choose a realistic role/persona related to the topic.
+- Start with 1-2 natural English sentences and ask ONE clear question.
+- Keep it friendly, useful for speaking practice, not textbook-stiff.
 
-Reply ONLY with this JSON (no markdown):
-{"topic":"<topic in Vietnamese>","turns":[{"role":"ai","text":"<AI says this>"},{"role":"user","prompt":"<hint in Vietnamese: what the user should say>","ideal":"<ideal English response>"}]}
+Reply ONLY with JSON:
+{"topic":"short topic name","persona":"who the AI is roleplaying","opening":"AI opening message in English"}`;
 
-Alternate strictly: ai, user, ai, user... Start with ai.`;
-
-  const data = await openAIFetch( {model:"claude-haiku-4-5-20251001",max_tokens:900,
-    system:"Output ONLY raw JSON. No markdown. No explanation. Never use unescaped double-quote characters inside string values.",
-    messages:[{role:"user",content:prompt}]});
+  const data = await openAIFetch({
+    system: "You are an English conversation partner. Output ONLY compact JSON. No markdown.",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 450,
+  });
   const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
   let cv;
-  try { cv = repairAndParseJSON(raw); } catch(e) { throw new Error("Lỗi đọc kịch bản: "+e.message); }
-  if (!Array.isArray(cv.turns) || cv.turns.length < 2) throw new Error("Kịch bản không hợp lệ, thử lại nhé!");
-  cv.topic = cv.topic || topic || "Hội thoại tiếng Anh";
+  try { cv = repairAndParseJSON(raw); } catch { const m=raw.match(/\{[\s\S]*\}/); if(m) cv=JSON.parse(m[0]); }
+  if (!cv?.opening) {
+    cv = {
+      topic: topic || "Everyday conversation",
+      persona: "Friendly English conversation partner",
+      opening: `Let's talk about ${topic || "your day"}. What would you like to say first?`,
+    };
+  }
   return cv;
+}
+
+// ─── OpenAI — Open conversation reply + immediate suggestion ───────────────
+async function getOpenConvoReply(convo, messages, userText, level, apiKey) {
+  const transcript = messages.slice(-10).map(m => {
+    if (m.role === "ai") return `AI: ${m.text}`;
+    return `Learner: ${m.userSaid || m.text || ""}`;
+  }).join("\n");
+
+  const prompt = `Continue this English speaking conversation naturally.
+
+Topic: ${convo?.topic || "English conversation"}
+AI persona: ${convo?.persona || "Friendly English conversation partner"}
+Learner level: ${level}
+
+Recent transcript:
+${transcript}
+
+Learner just said:
+"${userText}"
+
+Your job:
+1. Give one brief improvement suggestion for the learner's sentence.
+2. Reply as the conversation partner and ask one natural follow-up question.
+
+Suggestion rules:
+- Be concise and practical.
+- If the sentence is already good, say so briefly and suggest a more natural phrase.
+- Do not over-correct. Pick the most useful improvement only.
+- Vietnamese for feedback, English for corrected sentence and AI reply.
+
+Reply ONLY with JSON:
+{"reply":"AI reply in English, 1-3 sentences max","suggestion":{"better":"more natural corrected sentence in English","note":"short Vietnamese explanation","focus":"grammar/vocabulary/pronunciation/fluency","score":80}}`;
+
+  const data = await openAIFetch({
+    system: "You are a warm English speaking coach and conversation partner. Output ONLY compact JSON. No markdown.",
+    messages: [{ role: "user", content: prompt }],
+    max_tokens: 700,
+  });
+  const raw = (data.content||[]).map(b=>b.text||"").join("").trim();
+  let parsed;
+  try { parsed = repairAndParseJSON(raw); } catch { const m=raw.match(/\{[\s\S]*\}/); if(m) parsed=JSON.parse(m[0]); }
+  if (!parsed?.reply) {
+    parsed = {
+      reply: "That makes sense. Could you tell me a little more about that?",
+      suggestion: { better: userText, note: "Câu này đủ để giao tiếp. Bạn có thể nói chậm và rõ hơn để nghe tự nhiên hơn.", focus: "fluency", score: 70 },
+    };
+  }
+  parsed.suggestion = parsed.suggestion || {};
+  parsed.suggestion.better = parsed.suggestion.better || userText;
+  parsed.suggestion.note = parsed.suggestion.note || "Gợi ý: nói thành câu ngắn, rõ ý trước; sau đó mới thêm chi tiết.";
+  parsed.suggestion.focus = parsed.suggestion.focus || "fluency";
+  parsed.suggestion.score = parsed.suggestion.score || 70;
+  return parsed;
 }
 
 // ─── Claude API — Review Full Conversation ────────────────────────────────
 async function reviewConversation(turns, apiKey) {
   const transcript = turns
     .filter(t => t.role === "user" && t.userSaid)
-    .map((t,i) => `User turn ${i+1}:\n  Said: "${t.userSaid}"\n  Ideal: "${t.ideal}"`)
+    .map((t,i) => `User turn ${i+1}:\n  Said: "${t.userSaid}"\n  Better: "${t.suggestion?.better || ""}"\n  Note: "${t.suggestion?.note || ""}"`)
     .join("\n");
 
   const prompt = `Review this English conversation from a Vietnamese learner. Analyze each user turn.
@@ -686,10 +741,10 @@ async function reviewConversation(turns, apiKey) {
 ${transcript}
 
 For each user turn, provide:
-1. Pronunciation score estimate (based on similarity to ideal, 0-100)
-2. Grammar corrections if needed
+1. Speaking score estimate (0-100)
+2. Grammar/vocabulary correction if needed
 3. More natural/refined version
-4. One specific tip
+4. One specific speaking tip
 
 Reply ONLY with raw JSON (no markdown, no unescaped quotes inside strings):
 {"overallScore":75,"summary":"tổng kết bằng tiếng Việt","turns":[{"turnIndex":1,"said":"what they said","refined":"more natural version","grammarNote":"ghi chú ngữ pháp","pronunciationTip":"mẹo phát âm","score":80}]}`;
@@ -1695,6 +1750,7 @@ function VocabApp({ apiKey }) {
   const [convoListening, setConvoListening] = useState(false);
   const [convoPlaying, setConvoPlaying]     = useState(false);
   const [convoLoading, setConvoLoading]     = useState(false);
+  const [convoAiThinking, setConvoAiThinking] = useState(false);
   const [convoReview, setConvoReview]       = useState(null); // full review from AI
   const [convoReviewLoading, setConvoReviewLoading] = useState(false);
   const [convoPhase, setConvoPhase]   = useState("setup"); // setup|convo|review
@@ -3413,33 +3469,12 @@ function VocabApp({ apiKey }) {
         {/* ══ CONVERSATION MODE ══ */}
         {mode===MODES.CONVO && (() => {
 
-          // Word-level similarity (reuse from speaking)
-          const normalize = s => s.toLowerCase().trim().replace(/[^a-z\s']/g,"").replace(/\s+/g," ");
-          const wordScore = (spoken, target) => {
-            const s = normalize(spoken).split(" ");
-            const t = normalize(target).split(" ");
-            if (!t.length) return 0;
-            let matched = 0;
-            t.forEach((tw,i) => {
-              const sw = s[i]||"";
-              if (sw===tw) { matched+=1; return; }
-              let m=0;
-              for (let j=0;j<Math.min(sw.length,tw.length);j++) if(sw[j]===tw[j]) m++;
-              matched += (m/Math.max(sw.length,tw.length,1))*0.6;
-            });
-            return Math.round((matched/t.length)*100);
-          };
-          const charDiff = (spoken, target) => normalize(target).split(" ").map((tw,i)=>{
-            const sw = normalize(spoken).split(" ")[i]||"";
-            if(sw===tw) return {word:tw,status:"ok"};
-            if(!sw) return {word:tw,status:"miss"};
-            return {word:tw,spoken:sw,status:"bad"};
-          });
-          const scoreColor = s => s>=85?"#4ade80":s>=65?"#fbbf24":"#f87171";
+	          const scoreColor = s => s>=85?"#4ade80":s>=65?"#fbbf24":"#f87171";
 
-          const currentTurn = convoScript?.turns?.[convoTurn];
-          const isUserTurn = currentTurn?.role === "user";
-          const isLastTurn = convoScript && convoTurn >= convoScript.turns.length;
+	          const userTurnCount = convoLog.filter(t=>t.role==="user").length;
+	          const maxConvoTurns = 6;
+	          const isLastTurn = convoScript && userTurnCount >= maxConvoTurns;
+	          const isUserTurn = convoPhase==="convo" && !isLastTurn && !convoAiThinking;
 
           // ── Keep refs in sync ──────────────────────────────────────────
           convoTurnRef.current   = convoTurn;
@@ -3455,65 +3490,46 @@ function VocabApp({ apiKey }) {
             setTimeout(() => { setConvoPlaying(false); if (onDone) onDone(); }, est);
           };
 
-          // Advance an AI turn — pure ref-based, no stale closure
-          const advanceAI = (turnIdx) => {
-            const script = convoScriptRef.current;
-            if (!script || turnIdx >= script.turns.length) return;
-            const t = script.turns[turnIdx];
-            if (!t || t.role !== "ai") return;
-            // Guard: don't add if already logged
-            if (convoLogRef.current.some((l,i) => i === convoLogRef.current.length-1 && l.role==="ai" && l.text===t.text && convoLogRef.current.length > 0)) return;
-            const entry = {role:"ai", text:t.text};
-            convoLogRef.current = [...convoLogRef.current, entry];
-            setConvoLog([...convoLogRef.current]);
-            convoTurnRef.current = turnIdx + 1;
-            setConvoTurn(turnIdx + 1);
-            playAI(t.text, () => {
-              // After AI speaks, nothing auto-fires — user must press mic
-            });
-          };
-
-          // Stop current recording
-          const stopListening = () => {
-            try { convoRecRef.current?.stop(); } catch(_) {}
-            setConvoListening(false);
-            convoResultPending.current = false;
-          };
-
-          // Start listening — Google STT, user presses stop when done
-          const listenUser = () => {
-            if (convoListening) { stopGoogleSTT(); return; }
-            convoResultPending.current = false;
-            setConvoLiveText("");
+	          // Start listening — Google STT, user presses stop when done
+	          const listenUser = () => {
+	            if (convoListening) { stopGoogleSTT(); return; }
+	            convoResultPending.current = false;
+	            setConvoLiveText("");
             startGoogleSTT({
               onStart: () => setConvoListening(true),
               onEnd:   () => setConvoListening(false),
               onError: () => setConvoListening(false),
-              onResult: (data) => {
-                if (convoResultPending.current) return;
-                convoResultPending.current = true;
-                const fullText = data.transcript?.trim() || "";
-                setConvoLiveText("");
-                const turnIdx = convoTurnRef.current;
-                const script  = convoScriptRef.current;
-                if (!script || turnIdx >= script.turns.length) return;
-                const turn = script.turns[turnIdx];
-                if (!turn || turn.role !== "user") return;
-                const ideal = turn.ideal || "";
-                const { score, wordScores } = pronunciationScore(data.words||[], ideal);
-                const diff = wordScores.map(w=>({word:w.word,spoken:w.spoken,status:w.status}));
-                const logEntry = {role:"user",text:turn.prompt,userSaid:fullText,ideal,score,diff};
-                convoLogRef.current = [...convoLogRef.current, logEntry];
-                setConvoLog([...convoLogRef.current]);
-                const nextIdx = turnIdx+1;
-                convoTurnRef.current = nextIdx;
-                setConvoTurn(nextIdx);
-                if (nextIdx < script.turns.length && script.turns[nextIdx]?.role==="ai") {
-                  setTimeout(()=>advanceAI(nextIdx), 700);
-                }
-              },
-            });
-          };
+	              onResult: async (data) => {
+	                if (convoResultPending.current) return;
+	                convoResultPending.current = true;
+	                const fullText = data.transcript?.trim() || "";
+	                setConvoLiveText("");
+	                if (!fullText) {
+	                  alert("Không nghe được, bạn thử nói lại nhé.");
+	                  return;
+	                }
+	                const script = convoScriptRef.current;
+	                if (!script) return;
+	                const logEntry = {role:"user",text:fullText,userSaid:fullText,ts:Date.now()};
+	                convoLogRef.current = [...convoLogRef.current, logEntry];
+	                setConvoLog([...convoLogRef.current]);
+	                setConvoAiThinking(true);
+	                try {
+	                  const result = await getOpenConvoReply(script, convoLogRef.current, fullText, convoLevel, apiKey);
+	                  const updatedUser = {...logEntry, suggestion: result.suggestion};
+	                  const aiEntry = {role:"ai",text:result.reply,ts:Date.now()};
+	                  convoLogRef.current = [...convoLogRef.current.slice(0,-1), updatedUser, aiEntry];
+	                  setConvoLog([...convoLogRef.current]);
+	                  setConvoTurn(convoLogRef.current.filter(t=>t.role==="user").length);
+	                  playAI(result.reply);
+	                } catch(e) {
+	                  alert("Lỗi tạo phản hồi hội thoại: " + e.message);
+	                } finally {
+	                  setConvoAiThinking(false);
+	                }
+	              },
+	            });
+	          };
 
           // Generate new script
           const startConvo = async () => {
@@ -3523,14 +3539,17 @@ function VocabApp({ apiKey }) {
             convoTurnRef.current = 0;
             convoScriptRef.current = null;
             convoResultPending.current = false;
-            setConvoLog([]); setConvoTurn(0); setConvoReview(null);
-            setConvoPhase("convo"); setConvoLiveText("");
-            try {
-              const script = await generateConvoScript(convoTopic, convoLevel, allWords, apiKey);
-              convoScriptRef.current = script;
-              setConvoScript(script);
-              setTimeout(() => advanceAI(0), 500);
-            } catch(e) {
+	            setConvoLog([]); setConvoTurn(0); setConvoReview(null); setConvoAiThinking(false);
+	            setConvoPhase("convo"); setConvoLiveText("");
+	            try {
+	              const script = await generateOpenConversation(convoTopic, convoLevel, apiKey);
+	              convoScriptRef.current = script;
+	              setConvoScript(script);
+	              const opening = {role:"ai",text:script.opening,ts:Date.now()};
+	              convoLogRef.current = [opening];
+	              setConvoLog([opening]);
+	              setTimeout(() => playAI(script.opening), 500);
+	            } catch(e) {
               setConvoPhase("setup");
               alert("Lỗi tạo hội thoại: " + e.message);
             } finally {
@@ -3558,15 +3577,15 @@ function VocabApp({ apiKey }) {
           if (convoPhase==="setup") return (
             <div>
               <div style={{background:"linear-gradient(145deg,rgba(96,165,250,.07),rgba(129,140,248,.05))",border:"1px solid rgba(96,165,250,.18)",borderRadius:20,padding:"1.3rem",marginBottom:"1.1rem"}}>
-                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#93c5fd",marginBottom:".3rem"}}>💬 Luyện hội thoại</div>
-                <div style={{fontSize:".83rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
-                  AI tạo kịch bản hội thoại, bạn đóng vai người dùng. Nói tự nhiên, không ngắt quãng. Cuối bài xem review toàn bộ.
-                </div>
+	                <div style={{fontFamily:"'Playfair Display',serif",fontSize:"1.2rem",fontWeight:700,color:"#93c5fd",marginBottom:".3rem"}}>💬 Luyện hội thoại theo chủ đề</div>
+	                <div style={{fontSize:".83rem",color:"#7a6a8a",fontFamily:"'Crimson Pro',serif",lineHeight:1.65}}>
+	                  AI sẽ đóng vai người đối thoại, bạn nói bằng mic, app hiện transcript và gợi ý cải thiện sau mỗi lượt nói.
+	                </div>
               </div>
 
               <div style={{marginBottom:".7rem"}}>
                 <div style={{fontSize:".7rem",color:"#6a5a7a",marginBottom:".28rem",letterSpacing:".05em"}}>Chủ đề (để trống = AI tự chọn)</div>
-                <input className="fi" placeholder="vd: đặt phòng khách sạn, phỏng vấn xin việc, mua sắm..."
+	                <input className="fi" placeholder="vd: nói chuyện với bệnh nhân, đặt phòng khách sạn, phỏng vấn xin việc..."
                   value={convoTopic} onChange={e=>setConvoTopic(e.target.value)}
                   onKeyDown={e=>e.key==="Enter"&&!convoLoading&&startConvo()} />
               </div>
@@ -3585,7 +3604,7 @@ function VocabApp({ apiKey }) {
 
               <button className="btn" onClick={startConvo} disabled={convoLoading}
                 style={{width:"100%",padding:".9rem",borderRadius:14,background:convoLoading?"rgba(96,165,250,.2)":"linear-gradient(135deg,#60a5fa,#818cf8)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
-                {convoLoading ? "⏳ Đang tạo hội thoại..." : "🚀 Bắt đầu hội thoại"}
+	                {convoLoading ? "⏳ Đang mở hội thoại..." : "🚀 Bắt đầu hội thoại"}
               </button>
               {convoLoading && (
                 <div style={{marginTop:"1rem"}}>
@@ -3698,9 +3717,9 @@ function VocabApp({ apiKey }) {
                   <div style={{fontSize:".75rem",color:"#60a5fa",background:"rgba(96,165,250,.1)",border:"1px solid rgba(96,165,250,.2)",borderRadius:999,padding:".2rem .8rem"}}>
                     💬 {convoScript.topic}
                   </div>
-                  <div style={{fontSize:".72rem",color:"#5a4a6a"}}>
-                    {convoTurn}/{convoScript.turns.length} lượt
-                  </div>
+	                  <div style={{fontSize:".72rem",color:"#5a4a6a"}}>
+	                    {userTurnCount}/{maxConvoTurns} lượt
+	                  </div>
                 </div>
               )}
 
@@ -3716,31 +3735,48 @@ function VocabApp({ apiKey }) {
                         </div>
                         <div className="chat-bubble-ai" style={{fontSize:".95rem",fontFamily:"'Crimson Pro',serif",color:"#d4c8f0"}}>{t.text}</div>
                       </div>
-                    ) : (
-                      <div style={{textAlign:"right"}}>
-                        <div style={{fontSize:".62rem",color:"#a78bfa",marginBottom:".18rem"}}>👤 Bạn</div>
-                        <div className="chat-bubble-user" style={{fontSize:".95rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0"}}>
-                          {t.userSaid || <i style={{color:"#5a4a6a"}}>...</i>}
-                        </div>
-                      </div>
-                    )}
+	                    ) : (
+	                      <div style={{textAlign:"right"}}>
+	                        <div style={{fontSize:".62rem",color:"#a78bfa",marginBottom:".18rem"}}>👤 Bạn</div>
+	                        <div className="chat-bubble-user" style={{fontSize:".95rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0"}}>
+	                          {t.userSaid || <i style={{color:"#5a4a6a"}}>...</i>}
+	                        </div>
+	                        {t.suggestion && (
+	                          <div style={{textAlign:"left",marginLeft:"auto",maxWidth:"88%",background:"rgba(251,191,36,.07)",border:"1px solid rgba(251,191,36,.18)",borderRadius:12,padding:".55rem .7rem",marginTop:".35rem"}}>
+	                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:".6rem",marginBottom:".25rem"}}>
+	                              <div style={{fontSize:".62rem",color:"#fbbf24",letterSpacing:".08em",textTransform:"uppercase",fontWeight:700}}>Improvement Suggestion</div>
+	                              <span style={{fontSize:".62rem",color:"#6a5a7a"}}>{t.suggestion.focus || "fluency"}</span>
+	                            </div>
+	                            {t.suggestion.better && (
+	                              <div style={{fontSize:".85rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0",fontStyle:"italic",marginBottom:".28rem"}}>
+	                                "{t.suggestion.better}"
+	                              </div>
+	                            )}
+	                            <div style={{fontSize:".78rem",fontFamily:"'Crimson Pro',serif",color:"#b8a9c8",lineHeight:1.45}}>
+	                              {t.suggestion.note}
+	                            </div>
+	                          </div>
+	                        )}
+	                      </div>
+	                    )}
                   </div>
                 ))}
 
-                {/* AI is speaking indicator */}
-                {convoPlaying && (
-                  <div style={{display:"flex",gap:".3rem",alignItems:"center",padding:".5rem .9rem",width:"fit-content"}}>
-                    {[0,1,2].map(i=><div key={i} className="pulse-rec" style={{width:8,height:8,borderRadius:"50%",background:"#60a5fa",animationDelay:`${i*0.2}s`}}/>)}
-                  </div>
-                )}
+	                {/* AI thinking/speaking indicator */}
+	                {(convoPlaying || convoAiThinking) && (
+	                  <div style={{display:"flex",gap:".3rem",alignItems:"center",padding:".5rem .9rem",width:"fit-content"}}>
+	                    {[0,1,2].map(i=><div key={i} className="pulse-rec" style={{width:8,height:8,borderRadius:"50%",background:"#60a5fa",animationDelay:`${i*0.2}s`}}/>)}
+	                    <span style={{fontSize:".75rem",color:"#60a5fa",fontFamily:"'Crimson Pro',serif",marginLeft:".35rem"}}>{convoAiThinking ? "AI đang phản hồi..." : "AI đang nói..."}</span>
+	                  </div>
+	                )}
               </div>
 
               {/* User turn area */}
-              {!isLastTurn && isUserTurn && !convoPlaying && (
-                <div style={{background:"rgba(167,139,250,.05)",border:"1px solid rgba(167,139,250,.15)",borderRadius:16,padding:"1rem",marginBottom:"1rem"}}>
-                  <div style={{fontSize:".72rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem",lineHeight:1.5}}>
-                    💡 <b style={{color:"#c4b5fd"}}>Gợi ý:</b> {currentTurn?.prompt}
-                  </div>
+	              {!isLastTurn && isUserTurn && !convoPlaying && (
+	                <div style={{background:"rgba(167,139,250,.05)",border:"1px solid rgba(167,139,250,.15)",borderRadius:16,padding:"1rem",marginBottom:"1rem"}}>
+	                  <div style={{fontSize:".72rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem",lineHeight:1.5}}>
+	                    Nói tự nhiên bằng tiếng Anh. App sẽ hiện transcript và gợi ý cải thiện sau mỗi lượt.
+	                  </div>
                   <div style={{textAlign:"center"}}>
                     <button className={`mic-btn btn ${convoListening?"listening":"idle"}`} onClick={listenUser}>
                       {convoListening ? "⏹" : "🎤"}
@@ -3761,7 +3797,7 @@ function VocabApp({ apiKey }) {
               {isLastTurn && (
                 <div style={{textAlign:"center",padding:"1rem",background:"rgba(74,222,128,.06)",border:"1px solid rgba(74,222,128,.18)",borderRadius:16,marginBottom:"1rem"}}>
                   <div style={{fontSize:"1.8rem",marginBottom:".4rem"}}>🎉</div>
-                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:"#4ade80",marginBottom:".6rem"}}>Hội thoại hoàn thành!</div>
+	                  <div style={{fontFamily:"'Playfair Display',serif",fontWeight:700,color:"#4ade80",marginBottom:".6rem"}}>Bạn đã hoàn thành {maxConvoTurns} lượt nói!</div>
                   <button className="btn" onClick={getReview} disabled={convoReviewLoading}
                     style={{padding:".82rem 2rem",borderRadius:14,background:convoReviewLoading?"rgba(167,139,250,.2)":"linear-gradient(135deg,#a78bfa,#ec4899)",color:"white",border:"none",fontWeight:700,fontSize:"1rem"}}>
                     {convoReviewLoading ? "⏳ AI đang phân tích..." : "📊 Xem review chi tiết"}
@@ -3774,23 +3810,18 @@ function VocabApp({ apiKey }) {
                 </div>
               )}
 
-              {/* Skip / quit */}
-              <div style={{display:"flex",gap:".5rem",justifyContent:"center"}}>
-                {isUserTurn && !convoListening && !isLastTurn && (
-                  <button className="btn" onClick={()=>{
-                    const logEntry={role:"user",text:currentTurn?.prompt,userSaid:"(bỏ qua)",ideal:currentTurn?.ideal,score:0,diff:[]};
-                    setConvoLog(prev=>[...prev,logEntry]);
-                    const nextIdx=convoTurn+1;
-                    setConvoTurn(nextIdx);
-                    if(nextIdx<convoScript.turns.length) setTimeout(()=>advanceAI(nextIdx),300);
-                  }} style={{padding:".42rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
-                    ⏭ Bỏ qua lượt này
-                  </button>
-                )}
-                <button className="btn" onClick={()=>{
-                  convoRecRef.current?.stop();
-                  window.speechSynthesis?.cancel();
-                  setConvoPhase("setup"); setConvoScript(null); setConvoLog([]); setConvoTurn(0); setConvoLiveText(""); convoLogRef.current=[]; convoTurnRef.current=0; convoScriptRef.current=null;
+	              {/* End / quit */}
+	              <div style={{display:"flex",gap:".5rem",justifyContent:"center"}}>
+	                {userTurnCount > 0 && !convoListening && !convoAiThinking && !isLastTurn && (
+	                  <button className="btn" onClick={getReview} disabled={convoReviewLoading}
+	                    style={{padding:".42rem .9rem",borderRadius:10,background:"rgba(74,222,128,.08)",border:"1px solid rgba(74,222,128,.18)",color:"#4ade80",fontSize:".78rem"}}>
+	                    {convoReviewLoading ? "⏳ Đang review..." : "✓ Kết thúc & review"}
+	                  </button>
+	                )}
+	                <button className="btn" onClick={()=>{
+	                  convoRecRef.current?.stop();
+	                  window.speechSynthesis?.cancel();
+	                  setConvoPhase("setup"); setConvoScript(null); setConvoLog([]); setConvoTurn(0); setConvoLiveText(""); setConvoAiThinking(false); convoLogRef.current=[]; convoTurnRef.current=0; convoScriptRef.current=null;
                 }} style={{padding:".42rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
                   ✕ Thoát
                 </button>
