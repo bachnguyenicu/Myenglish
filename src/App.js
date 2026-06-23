@@ -129,17 +129,58 @@ function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 // ─── Google STT: Record audio and transcribe via proxy ────────────────────
 let _mediaRecorder = null;
 let _audioChunks   = [];
+let _speechRecognition = null;
 
 function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false }) {
   if (!navigator.mediaDevices?.getUserMedia) {
-    onError?.("Trình duyệt không hỗ trợ ghi âm"); return;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SpeechRecognition) { onError?.("Trình duyệt không hỗ trợ ghi âm"); return; }
+    const rec = new SpeechRecognition();
+    _speechRecognition = rec;
+    rec.lang = "en-US";
+    rec.continuous = false;
+    rec.interimResults = false;
+    rec.onstart = () => onStart?.();
+    rec.onend = () => { _speechRecognition = null; onEnd?.(); };
+    rec.onerror = e => { rec.onend = null; _speechRecognition = null; onError?.(e?.error || "Không nhận diện được giọng nói"); };
+    rec.onresult = e => {
+      const transcript = Array.from(e.results || []).map(r => r[0]?.transcript || "").join(" ").trim();
+      onResult?.({ transcript, confidence: e.results?.[0]?.[0]?.confidence || 0, words: [] });
+    };
+    try { rec.start(); } catch(e) { onError?.(e.message || "Không bắt đầu ghi âm được"); }
+    return;
   }
   navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
     _audioChunks = [];
     // Prefer opus for better compression; fallback to webm
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-      ? "audio/webm;codecs=opus" : "audio/webm";
-    const mr = new MediaRecorder(stream, { mimeType });
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!window.MediaRecorder) {
+      stream.getTracks().forEach(t => t.stop());
+      if (!SpeechRecognition) { onError?.("Trình duyệt không hỗ trợ ghi âm"); return; }
+      const rec = new SpeechRecognition();
+      _speechRecognition = rec;
+      rec.lang = "en-US";
+      rec.continuous = false;
+      rec.interimResults = false;
+      rec.onstart = () => onStart?.();
+      rec.onend = () => { _speechRecognition = null; onEnd?.(); };
+      rec.onerror = e => { rec.onend = null; _speechRecognition = null; onError?.(e?.error || "Không nhận diện được giọng nói"); };
+      rec.onresult = e => {
+        const transcript = Array.from(e.results || []).map(r => r[0]?.transcript || "").join(" ").trim();
+        onResult?.({ transcript, confidence: e.results?.[0]?.[0]?.confidence || 0, words: [] });
+      };
+      try { rec.start(); } catch(e) { onError?.(e.message || "Không bắt đầu ghi âm được"); }
+      return;
+    }
+    const mimeType = ["audio/webm;codecs=opus","audio/webm"].find(t => MediaRecorder.isTypeSupported(t)) || "";
+    let mr;
+    try {
+      mr = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
+    } catch(e) {
+      stream.getTracks().forEach(t => t.stop());
+      onError?.("Không khởi tạo được ghi âm: " + (e.message || e.name));
+      return;
+    }
     _mediaRecorder = mr;
 
     mr.ondataavailable = e => { if (e.data.size > 0) _audioChunks.push(e.data); };
@@ -148,7 +189,8 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
       stream.getTracks().forEach(t => t.stop());
       onEnd?.();
       if (_audioChunks.length === 0) { onError?.("Không nghe được gì"); return; }
-      const blob = new Blob(_audioChunks, { type: mimeType });
+      const actualMimeType = mr.mimeType || mimeType || "audio/webm";
+      const blob = new Blob(_audioChunks, { type: actualMimeType });
       // Convert to base64
       const reader = new FileReader();
       reader.onload = async () => {
@@ -157,7 +199,7 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
           const res = await fetch("/api/stt", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ audio: base64, mimeType }),
+            body: JSON.stringify({ audio: base64, mimeType: actualMimeType }),
           });
           if (!res.ok) throw new Error("STT proxy error " + res.status);
           const data = await res.json();
@@ -218,6 +260,9 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
 function stopGoogleSTT() {
   if (_mediaRecorder && _mediaRecorder.state === "recording") {
     _mediaRecorder.stop();
+  }
+  if (_speechRecognition) {
+    try { _speechRecognition.stop(); } catch(_) {}
   }
 }
 
@@ -1782,6 +1827,7 @@ function VocabApp({ apiKey }) {
   const [convoTurn, setConvoTurn]     = useState(0);       // current turn index
   const [convoLog, setConvoLog]       = useState([]);       // [{role, text, userSaid, score, diff}]
   const [convoListening, setConvoListening] = useState(false);
+  const [convoTranscribing, setConvoTranscribing] = useState(false);
   const [convoPlaying, setConvoPlaying]     = useState(false);
   const [convoLoading, setConvoLoading]     = useState(false);
   const [convoAiThinking, setConvoAiThinking] = useState(false);
@@ -1795,6 +1841,7 @@ function VocabApp({ apiKey }) {
   const convoScriptRef = useRef(null);  // mirrors convoScript but always fresh
   const convoLogRef   = useRef([]);     // mirrors convoLog but always fresh
   const convoResultPending = useRef(false); // guard against duplicate onresult fires
+  const convoSttTimeoutRef = useRef(null);
   const [convoLiveText, setConvoLiveText] = useState("");
   const [showSbSetup, setShowSbSetup] = useState(false);
   const [sbForm, setSbForm] = useState({ url: "", key: "", syncId: "" });
@@ -3508,7 +3555,7 @@ function VocabApp({ apiKey }) {
 	          const userTurnCount = convoLog.filter(t=>t.role==="user").length;
 	          const maxConvoTurns = 6;
 	          const isLastTurn = convoScript && userTurnCount >= maxConvoTurns;
-	          const isUserTurn = convoPhase==="convo" && !isLastTurn && !convoAiThinking;
+	          const isUserTurn = convoPhase==="convo" && !isLastTurn && !convoAiThinking && !convoTranscribing;
 
           // ── Keep refs in sync ──────────────────────────────────────────
           convoTurnRef.current   = convoTurn;
@@ -3526,19 +3573,47 @@ function VocabApp({ apiKey }) {
 
 	          // Start listening — Google STT, user presses stop when done
 	          const listenUser = () => {
-	            if (convoListening) { stopGoogleSTT(); return; }
+	            if (convoTranscribing || convoAiThinking) return;
+	            if (convoListening) {
+	              setConvoTranscribing(true);
+	              stopGoogleSTT();
+	              return;
+	            }
+	            clearTimeout(convoSttTimeoutRef.current);
 	            convoResultPending.current = false;
 	            setConvoLiveText("");
-            startGoogleSTT({
-              onStart: () => setConvoListening(true),
-              onEnd:   () => setConvoListening(false),
-              onError: () => setConvoListening(false),
+	            startGoogleSTT({
+	              onStart: () => { setConvoListening(true); setConvoTranscribing(false); },
+	              onEnd:   () => {
+	                setConvoListening(false);
+	                if (!convoResultPending.current) {
+	                  setConvoTranscribing(true);
+	                  clearTimeout(convoSttTimeoutRef.current);
+	                  convoSttTimeoutRef.current = setTimeout(() => {
+	                    if (!convoResultPending.current) {
+	                      setConvoTranscribing(false);
+	                      alert("Nhận diện giọng nói hơi lâu. Bạn thử bấm mic và nói lại nhé.");
+	                    }
+	                  }, 25000);
+	                }
+	              },
+	              onError: (msg) => {
+	                clearTimeout(convoSttTimeoutRef.current);
+	                setConvoListening(false);
+	                setConvoTranscribing(false);
+	                convoResultPending.current = false;
+	                if (msg) alert("Lỗi ghi âm: " + msg);
+	              },
 	              onResult: async (data) => {
 	                if (convoResultPending.current) return;
 	                convoResultPending.current = true;
+	                clearTimeout(convoSttTimeoutRef.current);
+	                setConvoListening(false);
+	                setConvoTranscribing(false);
 	                const fullText = data.transcript?.trim() || "";
-	                setConvoLiveText("");
+	                setConvoLiveText(fullText);
 	                if (!fullText) {
+	                  convoResultPending.current = false;
 	                  alert("Không nghe được, bạn thử nói lại nhé.");
 	                  return;
 	                }
@@ -3560,20 +3635,22 @@ function VocabApp({ apiKey }) {
 	                  alert("Lỗi tạo phản hồi hội thoại: " + e.message);
 	                } finally {
 	                  setConvoAiThinking(false);
+	                  convoResultPending.current = false;
 	                }
 	              },
 	            });
 	          };
 
           // Generate new script
-          const startConvo = async () => {
-            setConvoLoading(true);
-            // Reset all refs and state
-            convoLogRef.current = [];
+	          const startConvo = async () => {
+	            setConvoLoading(true);
+	            // Reset all refs and state
+	            clearTimeout(convoSttTimeoutRef.current);
+	            convoLogRef.current = [];
             convoTurnRef.current = 0;
             convoScriptRef.current = null;
             convoResultPending.current = false;
-	            setConvoLog([]); setConvoTurn(0); setConvoReview(null); setConvoAiThinking(false);
+	            setConvoLog([]); setConvoTurn(0); setConvoReview(null); setConvoAiThinking(false); setConvoTranscribing(false);
 	            setConvoPhase("convo"); setConvoLiveText("");
 	            try {
 	              const script = await generateOpenConversation(convoTopic, convoLevel, apiKey);
@@ -3806,26 +3883,27 @@ function VocabApp({ apiKey }) {
               </div>
 
               {/* User turn area */}
-	              {!isLastTurn && isUserTurn && !convoPlaying && (
+	              {!isLastTurn && !convoPlaying && !convoAiThinking && (
 	                <div style={{background:"rgba(167,139,250,.05)",border:"1px solid rgba(167,139,250,.15)",borderRadius:16,padding:"1rem",marginBottom:"1rem"}}>
 	                  <div style={{fontSize:".72rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem",lineHeight:1.5}}>
 	                    Nói tự nhiên bằng tiếng Anh. App sẽ hiện transcript và gợi ý cải thiện sau mỗi lượt.
 	                  </div>
-                  <div style={{textAlign:"center"}}>
-                    <button className={`mic-btn btn ${convoListening?"listening":"idle"}`} onClick={listenUser}>
-                      {convoListening ? "⏹" : "🎤"}
-                    </button>
-                    {convoListening && convoLiveText && (
-                      <div style={{marginTop:".6rem",padding:".5rem .8rem",background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.2)",borderRadius:10,fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#c4b5fd",fontStyle:"italic",minHeight:36}}>
-                        "{convoLiveText}"
-                      </div>
-                    )}
-                    <div style={{fontSize:".75rem",color:convoListening?"#f87171":"#5a4a6a",marginTop:".5rem",fontFamily:"'Crimson Pro',serif"}}>
-                      {convoListening ? "🔴 Đang ghi âm — nói xong nhấn ⏹ để dừng" : "Nhấn 🎤 và nói câu trả lời của bạn"}
-                    </div>
-                  </div>
-                </div>
-              )}
+	                  <div style={{textAlign:"center"}}>
+	                    <button className={`mic-btn btn ${convoListening?"listening":"idle"}`} disabled={convoTranscribing} onClick={listenUser}
+	                      style={{opacity:convoTranscribing?0.65:1,cursor:convoTranscribing?"wait":"pointer"}}>
+	                      {convoTranscribing ? "…" : convoListening ? "⏹" : "🎤"}
+	                    </button>
+	                    {(convoListening || convoTranscribing || convoLiveText) && (
+	                      <div style={{marginTop:".6rem",padding:".5rem .8rem",background:"rgba(167,139,250,.1)",border:"1px solid rgba(167,139,250,.2)",borderRadius:10,fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#c4b5fd",fontStyle:"italic",minHeight:36}}>
+	                        {convoLiveText ? `"${convoLiveText}"` : (convoTranscribing ? "Đang nhận diện giọng nói..." : "Đang ghi âm...")}
+	                      </div>
+	                    )}
+	                    <div style={{fontSize:".75rem",color:convoListening?"#f87171":convoTranscribing?"#fbbf24":"#5a4a6a",marginTop:".5rem",fontFamily:"'Crimson Pro',serif"}}>
+	                      {convoListening ? "🔴 Đang ghi âm — nói xong nhấn ⏹ để dừng" : convoTranscribing ? "⏳ Đang chuyển giọng nói thành chữ..." : "Nhấn 🎤 và nói câu trả lời của bạn"}
+	                    </div>
+	                  </div>
+	                </div>
+	              )}
 
               {/* Conversation ended */}
               {isLastTurn && (
@@ -3846,7 +3924,7 @@ function VocabApp({ apiKey }) {
 
 	              {/* End / quit */}
 	              <div style={{display:"flex",gap:".5rem",justifyContent:"center"}}>
-	                {userTurnCount > 0 && !convoListening && !convoAiThinking && !isLastTurn && (
+	                {userTurnCount > 0 && !convoListening && !convoTranscribing && !convoAiThinking && !isLastTurn && (
 	                  <button className="btn" onClick={getReview} disabled={convoReviewLoading}
 	                    style={{padding:".42rem .9rem",borderRadius:10,background:"rgba(74,222,128,.08)",border:"1px solid rgba(74,222,128,.18)",color:"#4ade80",fontSize:".78rem"}}>
 	                    {convoReviewLoading ? "⏳ Đang review..." : "✓ Kết thúc & review"}
@@ -3855,7 +3933,8 @@ function VocabApp({ apiKey }) {
 	                <button className="btn" onClick={()=>{
 	                  convoRecRef.current?.stop();
 	                  window.speechSynthesis?.cancel();
-	                  setConvoPhase("setup"); setConvoScript(null); setConvoLog([]); setConvoTurn(0); setConvoLiveText(""); setConvoAiThinking(false); convoLogRef.current=[]; convoTurnRef.current=0; convoScriptRef.current=null;
+	                  setConvoPhase("setup"); setConvoScript(null); setConvoLog([]); setConvoTurn(0); setConvoLiveText(""); setConvoAiThinking(false); setConvoTranscribing(false); convoLogRef.current=[]; convoTurnRef.current=0; convoScriptRef.current=null;
+	                  clearTimeout(convoSttTimeoutRef.current);
                 }} style={{padding:".42rem .9rem",borderRadius:10,background:"rgba(255,255,255,.04)",border:"1px solid rgba(255,255,255,.08)",color:"#5a4a6a",fontSize:".78rem"}}>
                   ✕ Thoát
                 </button>
