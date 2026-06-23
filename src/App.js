@@ -130,6 +130,7 @@ function shuffle(a) { return [...a].sort(() => Math.random() - 0.5); }
 let _mediaRecorder = null;
 let _audioChunks   = [];
 let _speechRecognition = null;
+let _userAudio = null;
 
 function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false, maxMs = 180000 }) {
   if (!navigator.mediaDevices?.getUserMedia) {
@@ -189,10 +190,11 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false,
       stream.getTracks().forEach(t => t.stop());
       onEnd?.();
       if (_audioChunks.length === 0) { onError?.("Không nghe được gì"); return; }
-      const actualMimeType = mr.mimeType || mimeType || "audio/webm";
-      const blob = new Blob(_audioChunks, { type: actualMimeType });
-      // Convert to base64
-      const reader = new FileReader();
+	      const actualMimeType = mr.mimeType || mimeType || "audio/webm";
+	      const blob = new Blob(_audioChunks, { type: actualMimeType });
+	      const audioUrl = URL.createObjectURL(blob);
+	      // Convert to base64
+	      const reader = new FileReader();
       reader.onload = async () => {
         const base64 = reader.result.split(",")[1];
         try {
@@ -205,8 +207,10 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false,
             const err = await res.json().catch(() => ({}));
             throw new Error(err?.error || ("STT proxy error " + res.status));
           }
-          const data = await res.json();
-          onResult?.(data); // {transcript, confidence, words}
+	          const data = await res.json();
+	          data.audioUrl = audioUrl;
+	          data.audioMimeType = actualMimeType;
+	          onResult?.(data); // {transcript, confidence, words}
         } catch(e) {
           onError?.(e.message);
         }
@@ -267,6 +271,16 @@ function stopGoogleSTT() {
   if (_speechRecognition) {
     try { _speechRecognition.stop(); } catch(_) {}
   }
+}
+
+function playUserAudio(url) {
+  if (!url) return;
+  stopSpeak();
+  if (_userAudio) {
+    try { _userAudio.pause(); _userAudio.currentTime = 0; } catch(_) {}
+  }
+  _userAudio = new Audio(url);
+  _userAudio.play().catch(() => {});
 }
 
 // Word-level pronunciation score using Google confidence
@@ -3622,7 +3636,7 @@ function VocabApp({ apiKey }) {
 	                }
 	                const script = convoScriptRef.current;
 	                if (!script) return;
-	                const logEntry = {role:"user",text:fullText,userSaid:fullText,ts:Date.now()};
+		                const logEntry = {role:"user",text:fullText,userSaid:fullText,audioUrl:data.audioUrl||"",audioMimeType:data.audioMimeType||"",ts:Date.now()};
 	                convoLogRef.current = [...convoLogRef.current, logEntry];
 	                setConvoLog([...convoLogRef.current]);
 	                setConvoAiThinking(true);
@@ -3641,7 +3655,7 @@ function VocabApp({ apiKey }) {
 	                  convoResultPending.current = false;
 		                }
 		              },
-		              maxMs: 30000,
+		              maxMs: 58000,
 		            });
 	          };
 
@@ -3799,13 +3813,18 @@ function VocabApp({ apiKey }) {
                   ) : (
                     <div style={{textAlign:"right"}}>
                       <div style={{fontSize:".65rem",color:"#a78bfa",marginBottom:".2rem"}}>👤 Bạn</div>
-                      <div className="chat-bubble-user" style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0"}}>
-                        {t.userSaid || <i style={{color:"#5a4a6a"}}>Không nghe được</i>}
-                        {t.score !== undefined && (
-                          <span style={{display:"block",fontSize:".65rem",color:scoreColor(t.score),marginTop:".2rem"}}>Độ chính xác: {t.score}/100</span>
-                        )}
-                      </div>
-                    </div>
+	                      <div className="chat-bubble-user" style={{fontSize:".88rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0"}}>
+	                        {t.userSaid || <i style={{color:"#5a4a6a"}}>Không nghe được</i>}
+	                        {t.score !== undefined && (
+	                          <span style={{display:"block",fontSize:".65rem",color:scoreColor(t.score),marginTop:".2rem"}}>Độ chính xác: {t.score}/100</span>
+	                        )}
+	                      </div>
+	                      {t.audioUrl && (
+	                        <button className="spkbtn btn" style={{fontSize:".62rem",padding:".12rem .45rem",marginTop:".25rem"}} onClick={()=>playUserAudio(t.audioUrl)}>
+	                          ▶ Nghe lại giọng mình
+	                        </button>
+	                      )}
+	                    </div>
                   )}
                 </div>
               ))}
@@ -3853,10 +3872,15 @@ function VocabApp({ apiKey }) {
 	                    ) : (
 	                      <div style={{textAlign:"right"}}>
 	                        <div style={{fontSize:".62rem",color:"#a78bfa",marginBottom:".18rem"}}>👤 Bạn</div>
-	                        <div className="chat-bubble-user" style={{fontSize:".95rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0"}}>
-	                          {t.userSaid || <i style={{color:"#5a4a6a"}}>...</i>}
-	                        </div>
-	                        {t.suggestion && (
+		                        <div className="chat-bubble-user" style={{fontSize:".95rem",fontFamily:"'Crimson Pro',serif",color:"#e8e0f0"}}>
+		                          {t.userSaid || <i style={{color:"#5a4a6a"}}>...</i>}
+		                        </div>
+		                        {t.audioUrl && (
+		                          <button className="spkbtn btn" style={{fontSize:".62rem",padding:".12rem .45rem",marginTop:".25rem"}} onClick={()=>playUserAudio(t.audioUrl)}>
+		                            ▶ Nghe lại giọng mình
+		                          </button>
+		                        )}
+		                        {t.suggestion && (
 	                          <div style={{textAlign:"left",marginLeft:"auto",maxWidth:"88%",background:"rgba(251,191,36,.07)",border:"1px solid rgba(251,191,36,.18)",borderRadius:12,padding:".55rem .7rem",marginTop:".35rem"}}>
 	                            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:".6rem",marginBottom:".25rem"}}>
 	                              <div style={{fontSize:".62rem",color:"#fbbf24",letterSpacing:".08em",textTransform:"uppercase",fontWeight:700}}>Improvement Suggestion</div>
@@ -3890,7 +3914,7 @@ function VocabApp({ apiKey }) {
 	              {!isLastTurn && !convoPlaying && !convoAiThinking && (
 	                <div style={{background:"rgba(167,139,250,.05)",border:"1px solid rgba(167,139,250,.15)",borderRadius:16,padding:"1rem",marginBottom:"1rem"}}>
 	                  <div style={{fontSize:".72rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem",lineHeight:1.5}}>
-		                    Nói tự nhiên bằng tiếng Anh, mỗi lượt khoảng 1-2 câu hoặc dưới 30 giây. App sẽ hiện transcript và gợi ý cải thiện sau mỗi lượt.
+		                    Nói tự nhiên bằng tiếng Anh, mỗi lượt tối đa khoảng 1 phút. App sẽ hiện transcript, cho nghe lại giọng bạn và gợi ý cải thiện sau mỗi lượt.
 	                  </div>
 	                  <div style={{textAlign:"center"}}>
 	                    <button className={`mic-btn btn ${convoListening?"listening":"idle"}`} disabled={convoTranscribing} onClick={listenUser}
