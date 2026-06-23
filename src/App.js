@@ -276,6 +276,10 @@ async function openAIFetch(body, maxRetries = 3) {
 // Shared AudioContext — created once, reused for all TTS (iOS compatible)
 let _ttsAudio = null;
 let _sharedAudioCtx = null;
+let _ttsAbort = null;
+let _ttsPlayToken = 0;
+const _ttsCache = new Map();
+const TTS_CACHE_LIMIT = 40;
 
 function getAudioCtx() {
   if (!_sharedAudioCtx || _sharedAudioCtx.state === "closed") {
@@ -286,16 +290,26 @@ function getAudioCtx() {
 
 // Stop any currently playing TTS
 function stopSpeak() {
+  _ttsPlayToken += 1;
+  if (_ttsAbort) {
+    try { _ttsAbort.abort(); } catch(_) {}
+    _ttsAbort = null;
+  }
   if (_ttsAudio) {
-    try { _ttsAudio.stop(); } catch(_) {}
+    try {
+      _ttsAudio.onended = null;
+      if (typeof _ttsAudio.stop === "function") _ttsAudio.stop();
+      else if (typeof _ttsAudio.pause === "function") _ttsAudio.pause();
+    } catch(_) {}
     _ttsAudio = null;
   }
   window.speechSynthesis?.cancel();
 }
 
-function speakFallback(text, rate=0.92) {
+function speakFallback(text, rate=0.92, token=_ttsPlayToken) {
   // Original Web Speech API fallback
   if (!window.speechSynthesis) return;
+  if (token !== _ttsPlayToken) return;
   window.speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
   u.lang = "en-US";
@@ -312,40 +326,60 @@ function speakFallback(text, rate=0.92) {
 async function speak(text, rate=0.92, voice=null) {
   if (!text?.trim()) return;
   stopSpeak();
+  const token = ++_ttsPlayToken;
+  const cleanText = text.trim();
+  const cacheKey = `${voice || "default"}|${rate}|${cleanText}`;
 
   try {
-    const res = await fetch("/api/tts", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: text.trim(), rate, ...(voice ? {voice} : {}) }),
-    });
-    if (!res.ok) throw new Error("TTS proxy error");
+    let payload = _ttsCache.get(cacheKey);
+    if (!payload) {
+      const controller = new AbortController();
+      _ttsAbort = controller;
+      const res = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify({ text: cleanText, rate, ...(voice ? {voice} : {}) }),
+      });
+      if (_ttsAbort === controller) _ttsAbort = null;
+      if (token !== _ttsPlayToken) return;
+      if (!res.ok) throw new Error("TTS proxy error");
+      payload = await res.json();
+      if (token !== _ttsPlayToken) return;
+      _ttsCache.set(cacheKey, payload);
+      if (_ttsCache.size > TTS_CACHE_LIMIT) _ttsCache.delete(_ttsCache.keys().next().value);
+    }
+
     const ctx = getAudioCtx();
     if (ctx.state === "suspended") await ctx.resume();
 
-    const payload = await res.json();
     const audios = payload.audios?.length ? payload.audios : (payload.audio ? [payload.audio] : []);
     if (!audios.length) throw new Error("No audio");
 
     const playChunk = async (idx) => {
+      if (token !== _ttsPlayToken) return;
       if (idx >= audios.length) { _ttsAudio = null; return; }
       const binary = atob(audios[idx]);
       const bytes  = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
       const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
+      if (token !== _ttsPlayToken) return;
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
       _ttsAudio = source;
-      source.onended = () => playChunk(idx + 1);
+      source.onended = () => {
+        if (token === _ttsPlayToken) playChunk(idx + 1);
+      };
       source.start(0);
     };
 
     await playChunk(0);
 
   } catch(e) {
+    if (e?.name === "AbortError" || token !== _ttsPlayToken) return;
     // Fallback to Web Speech if Google TTS unavailable
-    speakFallback(text, rate);
+    speakFallback(cleanText, rate, token);
   }
 }
 function loadState(key, def) {
