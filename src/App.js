@@ -3641,7 +3641,7 @@ function VocabApp({ apiKey }) {
 	                  convoResultPending.current = false;
 		                }
 		              },
-		              maxMs: 45000,
+		              maxMs: 30000,
 		            });
 	          };
 
@@ -3890,7 +3890,7 @@ function VocabApp({ apiKey }) {
 	              {!isLastTurn && !convoPlaying && !convoAiThinking && (
 	                <div style={{background:"rgba(167,139,250,.05)",border:"1px solid rgba(167,139,250,.15)",borderRadius:16,padding:"1rem",marginBottom:"1rem"}}>
 	                  <div style={{fontSize:".72rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem",lineHeight:1.5}}>
-		                    Nói tự nhiên bằng tiếng Anh, mỗi lượt khoảng 1-3 câu hoặc dưới 45 giây. App sẽ hiện transcript và gợi ý cải thiện sau mỗi lượt.
+		                    Nói tự nhiên bằng tiếng Anh, mỗi lượt khoảng 1-2 câu hoặc dưới 30 giây. App sẽ hiện transcript và gợi ý cải thiện sau mỗi lượt.
 	                  </div>
 	                  <div style={{textAlign:"center"}}>
 	                    <button className={`mic-btn btn ${convoListening?"listening":"idle"}`} disabled={convoTranscribing} onClick={listenUser}
