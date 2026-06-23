@@ -131,7 +131,7 @@ let _mediaRecorder = null;
 let _audioChunks   = [];
 let _speechRecognition = null;
 
-function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false }) {
+function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false, maxMs = 180000 }) {
   if (!navigator.mediaDevices?.getUserMedia) {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) { onError?.("Trình duyệt không hỗ trợ ghi âm"); return; }
@@ -201,7 +201,10 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ audio: base64, mimeType: actualMimeType }),
           });
-          if (!res.ok) throw new Error("STT proxy error " + res.status);
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err?.error || ("STT proxy error " + res.status));
+          }
           const data = await res.json();
           onResult?.(data); // {transcript, confidence, words}
         } catch(e) {
@@ -221,7 +224,7 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
       // Max 3 minutes — enough for IELTS Part 2 long turn
       const maxTimer = setTimeout(() => {
         if (mr.state === "recording") mr.stop();
-      }, 180000);
+      }, maxMs);
 
       try {
         const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -251,7 +254,7 @@ function startGoogleSTT({ onResult, onError, onStart, onEnd, continuous = false 
       } catch(e) {
         clearTimeout(maxTimer);
         // Fallback: 3 min cap if AudioContext unavailable
-        setTimeout(() => { if (mr.state === "recording") mr.stop(); }, 180000);
+        setTimeout(() => { if (mr.state === "recording") mr.stop(); }, maxMs);
       }
     }
   }).catch(err => onError?.("Không truy cập được microphone: " + err.message));
@@ -3582,8 +3585,8 @@ function VocabApp({ apiKey }) {
 	            clearTimeout(convoSttTimeoutRef.current);
 	            convoResultPending.current = false;
 	            setConvoLiveText("");
-	            startGoogleSTT({
-	              onStart: () => { setConvoListening(true); setConvoTranscribing(false); },
+		            startGoogleSTT({
+		              onStart: () => { setConvoListening(true); setConvoTranscribing(false); },
 	              onEnd:   () => {
 	                setConvoListening(false);
 	                if (!convoResultPending.current) {
@@ -3604,7 +3607,7 @@ function VocabApp({ apiKey }) {
 	                convoResultPending.current = false;
 	                if (msg) alert("Lỗi ghi âm: " + msg);
 	              },
-	              onResult: async (data) => {
+		              onResult: async (data) => {
 	                if (convoResultPending.current) return;
 	                convoResultPending.current = true;
 	                clearTimeout(convoSttTimeoutRef.current);
@@ -3636,9 +3639,10 @@ function VocabApp({ apiKey }) {
 	                } finally {
 	                  setConvoAiThinking(false);
 	                  convoResultPending.current = false;
-	                }
-	              },
-	            });
+		                }
+		              },
+		              maxMs: 45000,
+		            });
 	          };
 
           // Generate new script
@@ -3886,7 +3890,7 @@ function VocabApp({ apiKey }) {
 	              {!isLastTurn && !convoPlaying && !convoAiThinking && (
 	                <div style={{background:"rgba(167,139,250,.05)",border:"1px solid rgba(167,139,250,.15)",borderRadius:16,padding:"1rem",marginBottom:"1rem"}}>
 	                  <div style={{fontSize:".72rem",color:"#8a7a9a",fontFamily:"'Crimson Pro',serif",marginBottom:".6rem",lineHeight:1.5}}>
-	                    Nói tự nhiên bằng tiếng Anh. App sẽ hiện transcript và gợi ý cải thiện sau mỗi lượt.
+		                    Nói tự nhiên bằng tiếng Anh, mỗi lượt khoảng 1-3 câu hoặc dưới 45 giây. App sẽ hiện transcript và gợi ý cải thiện sau mỗi lượt.
 	                  </div>
 	                  <div style={{textAlign:"center"}}>
 	                    <button className={`mic-btn btn ${convoListening?"listening":"idle"}`} disabled={convoTranscribing} onClick={listenUser}
